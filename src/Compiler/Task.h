@@ -21,9 +21,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #pragma once
 
 #include <QObject>
+#include <QVariant>
 #include <QVector>
-
-#include "Compiler/CompilerDefines.h"
 
 namespace FOEDAG {
 
@@ -40,6 +39,16 @@ enum class TaskType {
   Settings,
   Button,
   Clean,
+};
+
+enum class CustomDataType {
+  None,
+  Sim,
+};
+
+struct CustomData {
+  CustomDataType type{CustomDataType::None};
+  QVariant data;
 };
 
 /*!
@@ -70,6 +79,12 @@ class Task : public QObject {
   QString logFileReadPath() const;
   void setLogFileReadPath(QString key);
 
+  QString abbreviation() const;
+  void setAbbreviation(QString key);
+
+  void setCustomData(const CustomData &data);
+  const CustomData &cusomData() const;
+
   /*!
    * \brief trigger
    * Emits \a taskTriggered() signal to notify that some commend can be run.
@@ -89,30 +104,40 @@ class Task : public QObject {
    */
   void setValid(bool newValid);
 
+  bool isEnable() const;
+  bool isEnableDefault() const;
+  void setEnable(bool newEnable, bool enableDefault = true);
+
+  Task *cleanTask() const;
+  void setCleanTask(Task *newClean);
+
  signals:
   /*!
    * \brief statusChanged. Emits whenever status has changed.
    */
-  void statusChanged();
+  void statusChanged(FOEDAG::TaskStatus);
   /*!
    * \brief taskTriggered. Emits when user trigger the task.
    */
   void taskTriggered();
-  /*!
-   * \brief finished. Emits when status of the task set to Success or Fail,
-   * which means task done.
-   */
-  void finished();
+  void enableChanged();
 
  private:
   QString m_title;
+  QString m_abbreviation;
   QString m_settings_key;
   TaskStatus m_status{TaskStatus::None};
   TaskType m_type{TaskType::Action};
   QVector<Task *> m_subTask;
   Task *m_parent{nullptr};
+  Task *m_clean{nullptr};
   bool m_valid{false};
   QString m_logFilePath{};
+  bool m_enable{true};
+  bool m_enableDefault{true};
+  CustomData m_customData{};
 };
 
 }  // namespace FOEDAG
+
+Q_DECLARE_METATYPE(FOEDAG::TaskStatus)

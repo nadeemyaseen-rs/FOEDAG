@@ -11,7 +11,9 @@
 #include <set>
 
 #include "Compiler/CompilerDefines.h"
+#include "DesignFileWatcher.h"
 #include "MainWindow/Session.h"
+#include "Utils/QtUtils.h"
 #include "Utils/StringUtils.h"
 #include "Utils/sequential_map.h"
 
@@ -48,6 +50,8 @@ void ProjectManager::CreateProject(const ProjectOptions& opt) {
 
   setProjectType(opt.projectType);
   UpdateProjectInternal(opt, true);
+
+  DesignFileWatcher::Instance()->emitDesignCreated();
 }
 
 void ProjectManager::UpdateProject(const ProjectOptions& opt) {
@@ -57,7 +61,11 @@ void ProjectManager::UpdateProject(const ProjectOptions& opt) {
   deleteFileSet(DEFAULT_FOLDER_CONSTRS);
   setConstrFileSet(DEFAULT_FOLDER_CONSTRS);
 
+  deleteFileSet(DEFAULT_FOLDER_SIM);
+  setSimulationFileSet(DEFAULT_FOLDER_SIM);
+
   UpdateProjectInternal(opt, false);
+  DesignFileWatcher::Instance()->updateDesignFileWatchers(this);
 }
 
 QString ProjectManager::ProjectFilesPath(const QString& projPath,
@@ -146,8 +154,10 @@ int ProjectManager::CreateProjectbyXml(const QString& strProXMl) {
           QString strName = reader.attributes().value("name").toString();
           QString strPath = reader.attributes().value("path").toString();
           QString strProjectPath = strPath + "/" + strName;
-          ret = CreateProject(strName, strProjectPath);
-          ret = setProjectType(reader.attributes().value("type").toString());
+          CreateProject(strName, strProjectPath);
+          bool ok{true};
+          auto projectType = reader.attributes().value("type").toInt(&ok);
+          ret = setProjectType(ok ? projectType : RTL);
         } else {
           file.close();
           out << " Warning : This file < " << strProXMl
@@ -302,24 +312,29 @@ std::string ProjectManager::projectPath() const {
 
 bool ProjectManager::HasDesign() const { return !getProjectName().isEmpty(); }
 
-int ProjectManager::setProjectType(const QString& strType) {
+int ProjectManager::setProjectType(int strType) {
   int ret = 0;
   ProjectConfiguration* projectConfig = Project::Instance()->projectConfig();
   projectConfig->setProjectType(strType);
   return ret;
 }
 
-ProjectManager::ErrorInfo ProjectManager::addDesignFiles(
+ProjectType ProjectManager::projectType() const {
+  ProjectConfiguration* projectConfig = Project::Instance()->projectConfig();
+  return projectConfig ? static_cast<ProjectType>(projectConfig->projectType())
+                       : RTL;
+}
+
+ProjectManager::ErrorInfo ProjectManager::addFiles(
     const QString& commands, const QString& libs, const QString& fileNames,
     int lang, const QString& grName, bool isFileCopy, bool localToProject) {
-  setCurrentFileSet(getDesignActiveFileSet());
   ProjectFileSet* proFileSet =
       Project::Instance()->getProjectFileset(m_currentFileSet);
   if (nullptr == proFileSet) return {EC_FileSetNotExist};
 
-  const QStringList commandsList = StringSplit(commands, " ");
-  const QStringList libsList = StringSplit(libs, " ");
-  const QStringList fileList = StringSplit(fileNames, " ");
+  const QStringList commandsList = QtUtils::StringSplit(commands, ' ');
+  const QStringList libsList = QtUtils::StringSplit(libs, ' ');
+  const QStringList fileList = QtUtils::StringSplit(fileNames, ' ');
 
   // check file exists
   QStringList notExistingFiles;
@@ -337,6 +352,22 @@ ProjectManager::ErrorInfo ProjectManager::addDesignFiles(
     if (res != EC_Success) result = static_cast<ErrorCode>(res);
   }
   return {result};
+}
+
+ProjectManager::ErrorInfo ProjectManager::addDesignFiles(
+    const QString& commands, const QString& libs, const QString& fileNames,
+    int lang, const QString& grName, bool isFileCopy, bool localToProject) {
+  setCurrentFileSet(getDesignActiveFileSet());
+  return addFiles(commands, libs, fileNames, lang, grName, isFileCopy,
+                  localToProject);
+}
+
+ProjectManager::ErrorInfo ProjectManager::addSimulationFiles(
+    const QString& commands, const QString& libs, const QString& fileNames,
+    int lang, const QString& grName, bool isFileCopy, bool localToProject) {
+  setCurrentFileSet(getSimulationActiveFileSet());
+  return addFiles(commands, libs, fileNames, lang, grName, isFileCopy,
+                  localToProject);
 }
 
 QString ProjectManager::getDefaulUnitName() const {
@@ -358,9 +389,9 @@ int ProjectManager::setDesignFiles(const QString& commands, const QString& libs,
                                    const QString& grName, bool isFileCopy,
                                    bool localToProject) {
   setCurrentFileSet(getDesignActiveFileSet());
-  const QStringList fileList = StringSplit(fileNames, " ");
-  const QStringList commandsList = StringSplit(commands, " ");
-  const QStringList libsList = StringSplit(libs, " ");
+  const QStringList fileList = QtUtils::StringSplit(fileNames, ' ');
+  const QStringList commandsList = QtUtils::StringSplit(commands, ' ');
+  const QStringList libsList = QtUtils::StringSplit(libs, ' ');
 
   ProjectFileSet* proFileSet =
       Project::Instance()->getProjectFileset(m_currentFileSet);
@@ -396,6 +427,56 @@ int ProjectManager::setDesignFiles(const QString& commands, const QString& libs,
   int result{0};
   for (const auto& file : fileList) {
     int res = setDesignFile(file, isFileCopy, localToProject);
+    if (res != 0) result = res;
+  }
+  return result;
+}
+
+int ProjectManager::setSimulationFiles(const QString& commands,
+                                       const QString& libs,
+                                       const QString& fileNames, int lang,
+                                       const QString& grName, bool isFileCopy,
+                                       bool localToProject) {
+  // TODO @volodymyrk RG-305
+  setCurrentFileSet(getSimulationActiveFileSet());
+  const QStringList fileList = QtUtils::StringSplit(fileNames, ' ');
+  const QStringList commandsList = QtUtils::StringSplit(commands, ' ');
+  const QStringList libsList = QtUtils::StringSplit(libs, ' ');
+
+  ProjectFileSet* proFileSet =
+      Project::Instance()->getProjectFileset(m_currentFileSet);
+  if (nullptr == proFileSet) {
+    return -1;
+  }
+
+  if (localToProject) {
+    const auto path =
+        ProjectFilesPath(Project::Instance()->projectPath(),
+                         Project::Instance()->projectName(), m_currentFileSet);
+    QStringList fullPathFileList;
+    for (const auto& file : fileList) {
+      fullPathFileList.append(QtUtils::CreatePath(path, file));
+    }
+    proFileSet->addFiles(commandsList, libsList, fullPathFileList, lang,
+                         grName);
+  } else {
+    if (isFileCopy) {
+      QStringList localFileList;
+      for (const auto& file : fileList) {
+        const QFileInfo info{file};
+        localFileList.append(
+            ProjectFilesPath(getProjectPath(), getProjectName(),
+                             m_currentFileSet, info.fileName()));
+      }
+      proFileSet->addFiles(commandsList, libsList, localFileList, lang, grName);
+    } else {
+      proFileSet->addFiles(commandsList, libsList, fileList, lang, grName);
+    }
+  }
+
+  int result{0};
+  for (const auto& file : fileList) {
+    int res = setSimulationFile(file, isFileCopy, localToProject);
     if (res != 0) result = res;
   }
   return result;
@@ -556,6 +637,7 @@ int ProjectManager::deleteFile(const QString& strFileName) {
   }
 
   proFileSet->deleteFile(strFileName);
+  DesignFileWatcher::Instance()->updateDesignFileWatchers(this);
   return ret;
 }
 
@@ -569,6 +651,18 @@ int ProjectManager::setTopModule(const QString& strModuleName) {
 
   proFileSet->setOption(PROJECT_FILE_CONFIG_TOP, strModuleName);
   return ret;
+}
+
+ProjectManager::ErrorCode ProjectManager::setTopModuleSim(
+    const QString& strModuleName) {
+  ProjectFileSet* proFileSet =
+      Project::Instance()->getProjectFileset(m_currentFileSet);
+  if (nullptr == proFileSet) {
+    return EC_FileSetNotExist;
+  }
+
+  proFileSet->setOption(PROJECT_FILE_CONFIG_TOP, strModuleName);
+  return EC_Success;
 }
 
 int ProjectManager::setTopModuleLibrary(const QString& strModuleNameLib) {
@@ -698,12 +792,11 @@ QStringList ProjectManager::getDesignFiles() const {
   return getDesignFiles(getDesignActiveFileSet());
 }
 
-std::vector<std::pair<CompilationUnit, std::string>>
-ProjectManager::DesignFiles() const {
+ProjectManager::CompilationUnits ProjectManager::DesignFiles() const {
   ProjectFileSet* tmpFileSet =
       Project::Instance()->getProjectFileset(getDesignActiveFileSet());
 
-  std::vector<std::pair<CompilationUnit, std::string>> vec;
+  CompilationUnits vec;
   if (tmpFileSet && PROJECT_FILE_TYPE_DS == tmpFileSet->getSetType()) {
     auto tmpMapFiles = tmpFileSet->Files();
     for (auto iter = tmpMapFiles.begin(); iter != tmpMapFiles.end(); ++iter) {
@@ -714,8 +807,7 @@ ProjectManager::DesignFiles() const {
   return vec;
 }
 
-std::vector<std::pair<std::vector<std::string>, std::vector<std::string>>>
-ProjectManager::DesignLibraries() const {
+ProjectManager::Libraries ProjectManager::DesignLibraries() const {
   ProjectFileSet* tmpFileSet =
       Project::Instance()->getProjectFileset(getDesignActiveFileSet());
 
@@ -751,6 +843,57 @@ ProjectManager::DesignFileList() const {
   return vec;
 }
 
+ProjectManager::Libraries ProjectManager::SimulationLibraries() const {
+  ProjectFileSet* tmpFileSet =
+      Project::Instance()->getProjectFileset(getSimulationActiveFileSet());
+
+  std::vector<std::pair<std::vector<std::string>, std::vector<std::string>>>
+      result;
+  for (const auto& commandsLibs : tmpFileSet->getLibraries()) {
+    std::vector<std::string> commands;
+    std::vector<std::string> libs;
+    for (auto i = 0; i < commandsLibs.first.size(); ++i) {
+      commands.push_back(commandsLibs.first[i].toStdString());
+      libs.push_back(commandsLibs.second[i].toStdString());
+    }
+    result.emplace_back(std::move(commands), std::move(libs));
+  }
+
+  return result;
+}
+
+ProjectManager::CompilationUnits ProjectManager::SimulationFiles() const {
+  ProjectFileSet* tmpFileSet =
+      Project::Instance()->getProjectFileset(getSimulationActiveFileSet());
+
+  CompilationUnits vec;
+  if (tmpFileSet && PROJECT_FILE_TYPE_SS == tmpFileSet->getSetType()) {
+    auto tmpMapFiles = tmpFileSet->Files();
+    for (auto iter = tmpMapFiles.begin(); iter != tmpMapFiles.end(); ++iter) {
+      vec.push_back(
+          std::make_pair(iter->first, iter->second.join(" ").toStdString()));
+    }
+  }
+  return vec;
+}
+
+std::vector<std::pair<CompilationUnit, std::vector<std::string>>>
+ProjectManager::SimulationFileList() const {
+  ProjectFileSet* tmpFileSet =
+      Project::Instance()->getProjectFileset(getSimulationActiveFileSet());
+
+  std::vector<std::pair<CompilationUnit, std::vector<std::string>>> vec;
+  if (tmpFileSet && PROJECT_FILE_TYPE_SS == tmpFileSet->getSetType()) {
+    auto tmpMapFiles = tmpFileSet->Files();
+    for (auto iter = tmpMapFiles.cbegin(); iter != tmpMapFiles.cend(); ++iter) {
+      std::vector<std::string> files;
+      for (const auto& f : iter->second) files.push_back(f.toStdString());
+      vec.push_back(std::make_pair(iter->first, files));
+    }
+  }
+  return vec;
+}
+
 QString ProjectManager::getDesignTopModule(const QString& strFileSet) const {
   QString strTopModule;
 
@@ -771,6 +914,14 @@ std::string ProjectManager::DesignTopModule() const {
   return getDesignTopModule().toStdString();
 }
 
+QString ProjectManager::getSimulationTopModule() const {
+  return getSimulationTopModule(getSimulationActiveFileSet());
+}
+
+std::string ProjectManager::SimulationTopModule() const {
+  return getSimulationTopModule().toStdString();
+}
+
 QString ProjectManager::getDesignTopModuleLib(const QString& strFileSet) const {
   QString strTopModuleLib;
 
@@ -789,6 +940,25 @@ QString ProjectManager::getDesignTopModuleLib() const {
 
 std::string ProjectManager::DesignTopModuleLib() const {
   return getDesignTopModuleLib().toStdString();
+}
+
+QString ProjectManager::getSimulationTopModuleLib(
+    const QString& strFileSet) const {
+  ProjectFileSet* tmpFileSet =
+      Project::Instance()->getProjectFileset(strFileSet);
+
+  if (tmpFileSet && PROJECT_FILE_TYPE_SS == tmpFileSet->getSetType()) {
+    return tmpFileSet->getOption(PROJECT_FILE_CONFIG_TOP_LIB);
+  }
+  return QString{};
+}
+
+QString ProjectManager::getSimulationTopModuleLib() const {
+  return getSimulationTopModuleLib(getSimulationActiveFileSet());
+}
+
+std::string ProjectManager::SimulationTopModuleLib() const {
+  return getSimulationTopModuleLib().toStdString();
 }
 
 int ProjectManager::setConstrFileSet(const QString& strSetName) {
@@ -910,6 +1080,16 @@ std::vector<std::string> ProjectManager::getConstrFiles() const {
   return files;
 }
 
+std::string ProjectManager::getConstrPinFile() const {
+  const Suffixes pin{{"pin"}};
+  auto constraints = getConstrFiles();
+  for (const auto& c : constraints) {
+    const QFileInfo info{QString::fromStdString(c)};
+    if (pin.TestSuffix(info.suffix())) return c;
+  }
+  return std::string{};
+}
+
 int ProjectManager::setSimulationFileSet(const QString& strSetName) {
   int ret = 0;
   ret = CreateSrcsFolder(strSetName);
@@ -943,7 +1123,7 @@ QStringList ProjectManager::getSimulationFileSets() const {
 }
 
 QString ProjectManager::getSimulationActiveFileSet() const {
-  QString strActive = "";
+  QString strActive{};
 
   ProjectConfiguration* tmpProCfg = Project::Instance()->projectConfig();
   if (tmpProCfg) {
@@ -1285,15 +1465,8 @@ QString ProjectManager::getRunType(const QString& strRunName) const {
 }
 
 int ProjectManager::deleteFileSet(const QString& strSetName) {
-  int ret = 0;
-  ProjectFileSet* proFileSet =
-      Project::Instance()->getProjectFileset(strSetName);
-  if (proFileSet && PROJECT_FILE_TYPE_SS == proFileSet->getSetType() &&
-      strSetName == getSimulationActiveFileSet()) {
-    return -1;
-  }
   Project::Instance()->deleteProjectFileset(strSetName);
-  return ret;
+  return 0;
 }
 
 int ProjectManager::deleteRun(const QString& strRunName) {
@@ -1457,6 +1630,17 @@ int ProjectManager::CreateSDCFile(QString strFile) {
   return ret;
 }
 
+int ProjectManager::CreateCFile(const QString& strFile) {
+  int ret = 0;
+  QFile file(strFile);
+  if (file.exists()) return ret;
+  if (!file.open(QFile::WriteOnly | QFile::Text)) {
+    return -1;
+  }
+  file.close();
+  return ret;
+}
+
 int ProjectManager::AddOrCreateFileToFileSet(const QString& strFileName,
                                              bool isFileCopy) {
   int ret = 0;
@@ -1524,21 +1708,12 @@ bool ProjectManager::CopyFileToPath(QString sourceDir, QString destinDir,
   return true;
 }
 
-QStringList ProjectManager::StringSplit(const QString& str,
-                                        const QString& sep) {
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-  return str.split(sep, Qt::SkipEmptyParts);
-#else
-  return str.split(sep, QString::SkipEmptyParts);
-#endif
-}
-
 std::vector<std::pair<std::string, std::string>> ProjectManager::ParseMacro(
     const QString& macro) {
   std::vector<std::pair<std::string, std::string>> macroList;
-  const QStringList data = StringSplit(macro, " ");
+  const QStringList data = QtUtils::StringSplit(macro, ' ');
   for (const auto& d : data) {
-    auto splitted = StringSplit(d, "=");
+    auto splitted = QtUtils::StringSplit(d, '=');
     if (!splitted.isEmpty())
       macroList.push_back(std::make_pair(
           splitted.first().toStdString(),
@@ -1628,8 +1803,13 @@ int ProjectManager::CreateAndAddFile(const QString& suffix,
     ret = CreateSystemVerilogFile(filename);
   } else if (!suffix.compare("vhd", Qt::CaseInsensitive)) {
     ret = CreateVHDLFile(filename);
-  } else if (!suffix.compare("SDC", Qt::CaseInsensitive)) {
+  } else if (!suffix.compare("sdc", Qt::CaseInsensitive)) {
     ret = CreateSDCFile(filename);
+  } else if (!suffix.compare("pin", Qt::CaseInsensitive)) {
+    ret = CreateSDCFile(filename);
+  } else if (suffix.compare("cpp", Qt::CaseInsensitive) == 0 ||
+             suffix.compare("c", Qt::CaseInsensitive) == 0) {
+    ret = CreateCFile(filename);
   }
   if (0 == ret) {
     ret = AddOrCreateFileToFileSet(filenameAdd, copyFile);
@@ -1640,7 +1820,124 @@ int ProjectManager::CreateAndAddFile(const QString& suffix,
 void ProjectManager::UpdateProjectInternal(const ProjectOptions& opt,
                                            bool setTargetConstr) {
   setCurrentFileSet(opt.currentFileSet);
-  const QList<filedata> listFile = opt.sourceFileData.fileData;
+  auto addDesignFiles = [this](const QString& commands, const QString& libs,
+                               const QString& fileNames, int lang,
+                               const QString& grName, bool isFileCopy,
+                               bool localToProject) {
+    setDesignFiles(commands, libs, fileNames, lang, grName, isFileCopy,
+                   localToProject);
+  };
+
+  AddFiles(opt.sourceFileData, addDesignFiles);
+
+  setTopModule(opt.designOptions.topModule);
+  setTopModuleLibrary(opt.designOptions.topModuleLib);
+
+  const std::string delimiter = " ";
+  // Set Library Extensions
+  std::vector<std::string> ext;
+  StringUtils::tokenize(opt.designOptions.libraryExtList.toStdString(),
+                        delimiter, ext);
+  setLibraryExtensionList(ext);
+
+  // Set Library Paths
+  std::vector<std::string> tokens;
+  StringUtils::tokenize(opt.designOptions.libraryPathList.toStdString(),
+                        delimiter, tokens);
+  setLibraryPathList(tokens);
+
+  // Set Include Paths
+  std::vector<std::string> inc;
+  StringUtils::tokenize(opt.designOptions.includePathList.toStdString(),
+                        delimiter, inc);
+  setIncludePathList(inc);
+
+  // Set Macros
+  auto macro = ParseMacro(opt.designOptions.macroList);
+  setMacroList(macro);
+
+  setCurrentFileSet(DEFAULT_FOLDER_CONSTRS);
+  QString strDefaultCts;
+  const auto constr = opt.constrFileData.fileData;
+  for (const filedata& fdata : constr) {
+    if (LocalToProject == fdata.m_filePath) {
+      setConstrsFile(fdata.m_fileName, false);
+    } else {
+      setConstrsFile(fdata.m_filePath + "/" + fdata.m_fileName,
+                     opt.constrFileData.isCopySource);
+    }
+    strDefaultCts = fdata.m_fileName;
+  }
+
+  if (!strDefaultCts.isEmpty() && setTargetConstr) {
+    setTargetConstrs(strDefaultCts);
+  }
+
+  // simulation
+  setCurrentFileSet(DEFAULT_FOLDER_SIM);
+  auto addSimFiles = [this](const QString& commands, const QString& libs,
+                            const QString& fileNames, int lang,
+                            const QString& grName, bool isFileCopy,
+                            bool localToProject) {
+    setSimulationFiles(commands, libs, fileNames, lang, grName, isFileCopy,
+                       localToProject);
+  };
+
+  AddFiles(opt.simFileData, addSimFiles);
+  setTopModuleSim(opt.simulationOptions.topModule);
+  setTopModuleLibrary(opt.simulationOptions.topModuleLib);
+
+  ext.clear();
+  StringUtils::tokenize(opt.simulationOptions.libraryExtList.toStdString(),
+                        delimiter, ext);
+  setSimLibraryExtensionList(ext);
+  // Set Macros
+  macro = ParseMacro(opt.simulationOptions.macroList);
+  setSimMacroList(macro);
+  // Set Library Paths
+  tokens.clear();
+  StringUtils::tokenize(opt.simulationOptions.libraryPathList.toStdString(),
+                        delimiter, tokens);
+  setLibraryPathListSim(tokens);
+
+  // Set Include Paths
+  inc.clear();
+  StringUtils::tokenize(opt.simulationOptions.includePathList.toStdString(),
+                        delimiter, inc);
+  setIncludePathListSim(inc);
+
+  // -------------------------------------------------------------------------
+
+  setCurrentRun(DEFAULT_FOLDER_SYNTH);
+
+  if (opt.device.count() >= 4) {
+    QStringList strlist = opt.device;
+    QList<QPair<QString, QString>> listParam;
+    QPair<QString, QString> pair;
+    pair.first = PROJECT_PART_SERIES;
+    pair.second = strlist.at(0);
+    listParam.append(pair);
+    pair.first = PROJECT_PART_FAMILY;
+    pair.second = strlist.at(1);
+    listParam.append(pair);
+    pair.first = PROJECT_PART_PACKAGE;
+    pair.second = strlist.at(2);
+    listParam.append(pair);
+    pair.first = PROJECT_PART_DEVICE;
+    pair.second = strlist.at(3);
+    listParam.append(pair);
+    setSynthesisOption(listParam);
+
+    auto targetDevice = strlist.at(3);
+    target_device(targetDevice);
+  }
+
+  FinishedProject();
+}
+
+void ProjectManager::AddFiles(const ProjectOptions::FileData& fileData,
+                              const AddFileFunction& addFileFunction) {
+  const QList<filedata> listFile = fileData.fileData;
 
   // Group and add files to project based off m_groupName
   sequential_map<QString, QList<filedata>> fileGroups{};
@@ -1663,13 +1960,12 @@ void ProjectManager::UpdateProjectInternal(const ProjectOptions& opt,
         auto command = libraries.isEmpty() ? QString() : "-work";
 
         if (LocalToProject == fdata.m_filePath) {
-          setDesignFiles(command, libraries, fdata.m_fileName, fdata.m_language,
-                         QString{}, false, true);
+          addFileFunction(command, libraries, fdata.m_fileName,
+                          fdata.m_language, QString{}, false, true);
         } else {
-          setDesignFiles(command, libraries,
-                         fdata.m_filePath + "/" + fdata.m_fileName,
-                         fdata.m_language, QString{},
-                         opt.sourceFileData.isCopySource, false);
+          addFileFunction(
+              command, libraries, fdata.m_filePath + "/" + fdata.m_fileName,
+              fdata.m_language, QString{}, fileData.isCopySource, false);
         }
       }
       continue;
@@ -1741,79 +2037,13 @@ void ProjectManager::UpdateProjectInternal(const ProjectOptions& opt,
       std::cerr << "Multiple languages" << std::endl;
       // This seems like a pontential error scenario as well
     } else if (hasLocalFiles) {
-      setDesignFiles(command, libraries, fileListStr[key], language, key, false,
-                     true);
+      addFileFunction(command, libraries, fileListStr[key], language, key,
+                      false, true);
     } else {
-      setDesignFiles(command, libraries, fileListStr[key], language, key,
-                     opt.sourceFileData.isCopySource, false);
+      addFileFunction(command, libraries, fileListStr[key], language, key,
+                      fileData.isCopySource, false);
     }
   }
-
-  setTopModule(opt.topModule);
-  setTopModuleLibrary(opt.topModuleLib);
-
-  const std::string delimiter = " ";
-  // Set Library Extensions
-  std::vector<std::string> ext;
-  StringUtils::tokenize(opt.libraryExtList.toStdString(), delimiter, ext);
-  setLibraryExtensionList(ext);
-
-  // Set Library Paths
-  std::vector<std::string> tokens;
-  StringUtils::tokenize(opt.libraryPathList.toStdString(), delimiter, tokens);
-  setLibraryPathList(tokens);
-
-  // Set Include Paths
-  std::vector<std::string> inc;
-  StringUtils::tokenize(opt.includePathList.toStdString(), delimiter, inc);
-  setIncludePathList(inc);
-
-  // Set Macros
-  auto macro = ParseMacro(opt.macroList);
-  setMacroList(macro);
-
-  setCurrentFileSet(DEFAULT_FOLDER_CONSTRS);
-  QString strDefaultCts;
-  const auto constr = opt.constrFileData.fileData;
-  for (const filedata& fdata : constr) {
-    if (LocalToProject == fdata.m_filePath) {
-      setConstrsFile(fdata.m_fileName, false);
-    } else {
-      setConstrsFile(fdata.m_filePath + "/" + fdata.m_fileName,
-                     opt.constrFileData.isCopySource);
-    }
-    strDefaultCts = fdata.m_fileName;
-  }
-
-  if (!strDefaultCts.isEmpty() && setTargetConstr) {
-    setTargetConstrs(strDefaultCts);
-  }
-
-  setCurrentRun(DEFAULT_FOLDER_SYNTH);
-
-  if (opt.device.count() >= 4) {
-    QStringList strlist = opt.device;
-    QList<QPair<QString, QString>> listParam;
-    QPair<QString, QString> pair;
-    pair.first = PROJECT_PART_SERIES;
-    pair.second = strlist.at(0);
-    listParam.append(pair);
-    pair.first = PROJECT_PART_FAMILY;
-    pair.second = strlist.at(1);
-    listParam.append(pair);
-    pair.first = PROJECT_PART_PACKAGE;
-    pair.second = strlist.at(2);
-    listParam.append(pair);
-    pair.first = PROJECT_PART_DEVICE;
-    pair.second = strlist.at(3);
-    listParam.append(pair);
-    setSynthesisOption(listParam);
-
-    auto targetDevice = strlist.at(3);
-    target_device(targetDevice);
-  }
-
-  FinishedProject();
 }
 
 const std::vector<std::string>& ProjectManager::libraryPathList() const {
@@ -1880,10 +2110,114 @@ QString ProjectManager::macros() const {
   return tmpList.join(" ");
 }
 
+const std::vector<std::string>& ProjectManager::simLibraryExtensionList()
+    const {
+  return Project::Instance()->simulationConfig()->libraryExtensionList();
+}
+
+QString ProjectManager::simLibraryExtension() const {
+  auto extList =
+      Project::Instance()->simulationConfig()->libraryExtensionList();
+  QStringList tmpList;
+  for (const auto& ext : extList) tmpList.append(QString::fromStdString(ext));
+  return tmpList.join(" ");
+}
+
+void ProjectManager::setSimLibraryExtensionList(
+    const std::vector<std::string>& newLibraryExtensionList) {
+  Project::Instance()->simulationConfig()->setLibraryExtensionList(
+      newLibraryExtensionList);
+}
+
+void ProjectManager::addSimLibraryExtension(const std::string& libraryExt) {
+  Project::Instance()->simulationConfig()->addLibraryExtension(libraryExt);
+}
+
+void ProjectManager::setSimMacroList(
+    const std::vector<std::pair<std::string, std::string>>& newMacroList) {
+  Project::Instance()->simulationConfig()->setMacroList(newMacroList);
+}
+
+void ProjectManager::addSimMacro(const std::string& macroName,
+                                 const std::string& macroValue) {
+  Project::Instance()->simulationConfig()->addMacro(macroName, macroValue);
+}
+
+const std::vector<std::pair<std::string, std::string>>&
+ProjectManager::macroListSim() const {
+  return Project::Instance()->simulationConfig()->macroList();
+}
+
+QString ProjectManager::macrosSim() const {
+  auto macro = Project::Instance()->simulationConfig()->macroList();
+  QStringList tmpList;
+  for (const auto& m : macro)
+    tmpList.append(QString::fromStdString(m.first + "=" + m.second));
+  return tmpList.join(" ");
+}
+
+const std::vector<std::string>& ProjectManager::includePathListSim() const {
+  return Project::Instance()->simulationConfig()->includePathList();
+}
+
+QString ProjectManager::includePathSim() const {
+  auto pathList = Project::Instance()->simulationConfig()->includePathList();
+  QStringList tmpList;
+  for (const auto& p : pathList) tmpList.append(QString::fromStdString(p));
+  return tmpList.join(" ");
+}
+
+void ProjectManager::setIncludePathListSim(
+    const std::vector<std::string>& newIncludePathList) {
+  Project::Instance()->simulationConfig()->setIncludePathList(
+      newIncludePathList);
+}
+
+void ProjectManager::addIncludePathSim(const std::string& includePath) {
+  Project::Instance()->simulationConfig()->addIncludePath(includePath);
+}
+
+const std::vector<std::string>& ProjectManager::libraryPathListSim() const {
+  return Project::Instance()->simulationConfig()->libraryPathList();
+}
+
+QString ProjectManager::libraryPathSim() const {
+  auto pathList = Project::Instance()->simulationConfig()->libraryPathList();
+  QStringList tmpList;
+  for (const auto& p : pathList) tmpList.append(QString::fromStdString(p));
+  return tmpList.join(" ");
+}
+
+void ProjectManager::setLibraryPathListSim(
+    const std::vector<std::string>& newLibraryPathList) {
+  Project::Instance()->simulationConfig()->setLibraryPathList(
+      newLibraryPathList);
+}
+
+void ProjectManager::addLibraryPathSim(const std::string& libraryPath) {
+  Project::Instance()->simulationConfig()->addLibraryPath(libraryPath);
+}
+
 void ProjectManager::setTargetDevice(const std::string& deviceName) {
   setCurrentRun(getActiveSynthRunName());
   auto result = setSynthesisOption(
       {{PROJECT_PART_DEVICE, QString::fromStdString(deviceName)}});
+  if (result != 0)
+    std::cerr << "setSynthesisOption(): something went wrong, return value is: "
+              << result
+              << std::endl;  // TODO @volodymyrk backlog,logging improve
+  emit saveFile();
+}
+
+void ProjectManager::setTargetDeviceData(const std::string& family,
+                                         const std::string& series,
+                                         const std::string& package) {
+  setCurrentRun(getActiveSynthRunName());
+  auto result = setSynthesisOption({
+      {PROJECT_PART_SERIES, QString::fromStdString(series)},
+      {PROJECT_PART_FAMILY, QString::fromStdString(family)},
+      {PROJECT_PART_PACKAGE, QString::fromStdString(package)},
+  });
   if (result != 0)
     std::cerr << "setSynthesisOption(): something went wrong, return value is: "
               << result

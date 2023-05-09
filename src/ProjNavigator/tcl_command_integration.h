@@ -27,6 +27,7 @@ namespace FOEDAG {
 
 class ProjectManager;
 class SourcesForm;
+
 class TclCommandIntegration : public QObject {
   Q_OBJECT
  public:
@@ -40,20 +41,30 @@ class TclCommandIntegration : public QObject {
                                  std::ostream &out);
   bool TclAddDesignFiles(const QString &commands, const QString &libs,
                          const QString &files, int lang, std::ostream &out);
+  bool TclAddSimulationFiles(const QString &commands, const QString &libs,
+                             const QString &files, int lang, std::ostream &out);
   bool TclAddOrCreateConstrFiles(const QString &file, std::ostream &out);
   bool TclAddConstrFiles(const QString &file, std::ostream &out);
   bool TclSetActive(int argc, const char *argv[], std::ostream &out);
   bool TclSetAsTarget(int argc, const char *argv[], std::ostream &out);
   bool TclCreateProject(int argc, const char *argv[], std::ostream &out);
-  bool TclCreateProject(const QString &name, std::ostream &out);
+  bool TclCreateProject(const QString &name, const QString &type,
+                        std::ostream &out);
+  bool TclCloseProject();
+  bool TclClearSimulationFiles(std::ostream &out);
+
+  bool TclshowChatGpt(const std::string &request, const std::string &content);
 
   ProjectManager *GetProjectManager();
 
  signals:
   void newDesign(const QString &);
+  void closeDesign();
+  void showChatGpt(const QString &r, const QString &data);
+  void chatGptStatus(bool);
 
- private slots:
-  void createNewDesign(const QString &design);
+ private:
+  void createNewDesign(const QString &design, int projectType = 0);
 
  private:
   bool validate() const;

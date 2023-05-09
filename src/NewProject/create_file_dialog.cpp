@@ -33,64 +33,78 @@ createFileDialog::createFileDialog(const QString &projectPath, QWidget *parent)
 
 createFileDialog::~createFileDialog() { delete ui; }
 
+bool createFileDialog::verifyFileName(const QString &fileName,
+                                      QWidget *parent) {
+  if (fileName.contains(" ")) {
+    QMessageBox::warning(
+        parent, tr("Warning"),
+        QString("\"%1\": file name with space not supported.").arg(fileName),
+        QMessageBox::Ok);
+    return false;
+  }
+  return true;
+}
+
 void createFileDialog::initialDialog(int type) {
   m_type = type;
-  if (GT_SOURCE == m_type) {
+  if (GT_SOURCE == m_type || GT_SIM == m_type) {
     setWindowTitle(tr("Create Source File"));
     ui->m_labelDetailed->setText(
         tr("Create a new source file and add it to your project."));
 
     ui->m_comboxFileType->clear();
-    ui->m_comboxFileType->addItem(tr("Verilog"));
-    ui->m_comboxFileType->addItem(tr("SystemVerilog"));
-    ui->m_comboxFileType->addItem(tr("VHDL"));
+    ui->m_comboxFileType->addItem(tr("Verilog"), Verilog);
+    ui->m_comboxFileType->addItem(tr("SystemVerilog"), SystemVerilog);
+    if (GT_SIM != m_type) ui->m_comboxFileType->addItem(tr("VHDL"), VHDL);
+    if (GT_SIM == m_type) ui->m_comboxFileType->addItem(tr("CPP"), Cpp);
   } else if (GT_CONSTRAINTS == m_type) {
     setWindowTitle(tr("Create Constraints File"));
     ui->m_labelDetailed->setText(
         tr("Create a new Constraints file and add it to your project."));
     ui->m_comboxFileType->clear();
-    ui->m_comboxFileType->addItem(tr("SDC"));
+    ui->m_comboxFileType->addItem(tr("sdc"), Sdc);
+    ui->m_comboxFileType->addItem(tr("pin"), Pin);
   }
   // ui->m_comboxFileType->setStyleSheet("border: 1px solid gray;");
 }
 
 void createFileDialog::on_m_pushBtnOK_clicked() {
-  if ("" == ui->m_lineEditFileName->text()) {
+  auto fileName = ui->m_lineEditFileName->text();
+  if (fileName.isEmpty()) {
     QMessageBox::information(this, tr("Information"),
                              tr("Please specify a file name"), QMessageBox::Ok);
     return;
   }
+  if (!verifyFileName(fileName, this)) return;
+
   filedata fdata;
   fdata.m_isFolder = false;
-  if (GT_SOURCE == m_type) {
-    switch (ui->m_comboxFileType->currentIndex()) {
-      case 0:
-        fdata.m_fileName = ui->m_lineEditFileName->text() + QString(".v");
+  if (GT_SOURCE == m_type || GT_SIM == m_type) {
+    switch (ui->m_comboxFileType->currentData().toInt()) {
+      case Verilog:
+        fdata.m_fileName = AppendExtension(fileName, QString(".v"));
         fdata.m_fileType = QString("v");
         break;
-      case 1:
-        fdata.m_fileName = ui->m_lineEditFileName->text() + QString(".sv");
+      case SystemVerilog:
+        fdata.m_fileName = AppendExtension(fileName, QString(".sv"));
         fdata.m_fileType = QString("sv");
         break;
-      case 2:
-        fdata.m_fileName = ui->m_lineEditFileName->text() + QString(".vhd");
+      case VHDL:
+        fdata.m_fileName = AppendExtension(fileName, QString(".vhd"));
         fdata.m_fileType = QString("vhd");
+        break;
+      case Cpp:
+        fdata.m_fileName = AppendExtension(fileName, QString(".cpp"));
+        fdata.m_fileType = QString("cpp");
         break;
       default:
         break;
     }
     fdata.m_language = FromFileType(fdata.m_fileType);
   } else if (GT_CONSTRAINTS == m_type) {
-    switch (ui->m_comboxFileType->currentIndex()) {
-      case 0:
-        fdata.m_fileName = ui->m_lineEditFileName->text() + QString(".SDC");
-        fdata.m_fileType = QString("SDC");
-        break;
-      case 1:
-        break;
-      default:
-        break;
-    }
+    auto ext = ui->m_comboxFileType->currentText();
+    fdata.m_fileName = AppendExtension(fileName, QString(".%1").arg(ext));
+    fdata.m_fileType = ext;
   }
 
   fdata.m_filePath = ui->m_comboxFileLocation->currentText();
@@ -135,4 +149,10 @@ bool createFileDialog::FileExists(const filedata &fData) const {
   }
   QFileInfo fileInfo(QDir(location), fData.m_fileName);
   return fileInfo.exists();
+}
+
+QString createFileDialog::AppendExtension(const QString &fileName,
+                                          const QString &ext) {
+  if (fileName.endsWith(ext, Qt::CaseInsensitive)) return fileName;
+  return QString{"%1%2"}.arg(fileName, ext);
 }

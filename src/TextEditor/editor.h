@@ -4,16 +4,14 @@
 #include <QApplication>
 #include <QFile>
 #include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QObject>
 #include <QTextStream>
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <QWidget>
 
-#include "Qsci/qsciapis.h"
-#include "Qsci/qscilexertcl.h"
-#include "Qsci/qscilexerverilog.h"
-#include "Qsci/qscilexervhdl.h"
+class QsciScintilla;
 
 namespace FOEDAG {
 
@@ -21,6 +19,7 @@ enum FileType {
   FILE_TYPE_VERILOG,
   FILE_TYPE_VHDL,
   FILE_TYPE_TCL,
+  FILE_TYPE_CPP,
   FILE_TYPE_UNKOWN
 };
 
@@ -32,14 +31,18 @@ class Editor : public QWidget {
 
   QString getFileName() const;
   bool isModified() const;
+  void SetFileWatcher(QFileSystemWatcher* watcher);
 
   void FindFirst(const QString& strWord);
   void FindNext(const QString& strWord);
   void Replace(const QString& strFind, const QString& strDesWord);
   void ReplaceAndFind(const QString& strFind, const QString& strDesWord);
   void ReplaceAll(const QString& strFind, const QString& strDesWord);
-  void markLine(int line);
+  void markLineError(int line);
+  void markLineWarning(int line);
   void clearMarkers();
+  void reload();
+  void selectLines(int lineFrom, int lineTo);
 
  signals:
   void EditorModificationChanged(bool m);
@@ -61,6 +64,7 @@ class Editor : public QWidget {
   void QScintillaTextChanged();
   void QscintillaSelectionChanged();
   void QscintillaModificationChanged(bool m);
+  void QscintillaLinesChanged();
 
  private:
   QString m_strFileName;
@@ -85,6 +89,10 @@ class Editor : public QWidget {
   void SetScintillaText(QString strFileName);
 
   void UpdateToolBarStates();
+  QFileSystemWatcher* m_fileWatcher{nullptr};
+  static constexpr int MIN_MARGIN_WIDTH{4};
+  static constexpr int MARGIN_INDEX{0};
+  int m_marginWidth{MIN_MARGIN_WIDTH};
 };
 
 }  // namespace FOEDAG

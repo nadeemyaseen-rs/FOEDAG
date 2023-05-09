@@ -28,6 +28,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <string.h>
 #include <sys/stat.h>
 
+#include <QDebug>
 #include <QProcess>
 #include <algorithm>
 #include <filesystem>
@@ -36,6 +37,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <regex>
 #include <sstream>
 #include <string>
+
+#include "Utils/StringUtils.h"
+
+std::vector<QProcess*> FOEDAG::FileUtils::m_processes{};
 
 namespace FOEDAG {
 
@@ -170,36 +175,100 @@ std::filesystem::path FileUtils::LocateFileRecursive(
   return result;
 }
 
-int FileUtils::ExecuteSystemCommand(const std::string& command,
-                                    std::ostream* result) {
-  QProcess* m_process = new QProcess;
+// This will search the given paths (non-recursively) for a child file.
+// All matches will be returned in a vector
+std::vector<std::filesystem::path> FileUtils::FindFileInDirs(
+    const std::string& filename,
+    const std::vector<std::filesystem::path>& searchPaths,
+    bool caseInsensitive) {
+  std::vector<std::filesystem::path> results{};
+  for (auto path : searchPaths) {
+    // Make sure search path is valid
+    if (FileUtils::FileExists(path)) {
+      // Iterate through files in path
+      for (const std::filesystem::path& entry :
+           std::filesystem::directory_iterator(
+               path,
+               std::filesystem::directory_options::follow_directory_symlink)) {
+        // Ensure this is a file
+        if (FileUtils::FileIsRegular(entry)) {
+          std::string entryName = entry.filename().string();
+          std::string searchName = filename;
+          if (caseInsensitive) {
+            // Convert both names to lowercase to ignore case
+            entryName = StringUtils::toLower(entryName);
+            searchName = StringUtils::toLower(searchName);
+          }
+          // Record the file on match
+          if (entryName == searchName) {
+            results.push_back(entry);
+          }
+        }
+      }
+    }
+  }
+  return results;
+}
 
-  QObject::connect(m_process, &QProcess::readyReadStandardOutput,
-                   [result, m_process]() {
-                     result->write(m_process->readAllStandardOutput(),
-                                   m_process->bytesAvailable());
+std::filesystem::path FileUtils::FindFileByExtension(
+    const std::filesystem::path& path, const std::string& extension) {
+  if (FileUtils::FileExists(path)) {
+    for (const std::filesystem::path& entry :
+         std::filesystem::directory_iterator(path)) {
+      if (FileUtils::FileIsRegular(entry)) {
+        if (StringUtils::toLower(entry.extension().string()) ==
+            StringUtils::toLower(extension))
+          return entry;
+      }
+    }
+  }
+  return {};
+}
+
+Return FileUtils::ExecuteSystemCommand(const std::string& command,
+                                       const std::vector<std::string>& args,
+                                       std::ostream* out, int timeout_ms,
+                                       const std::string& workingDir,
+                                       std::ostream* err) {
+  QProcess process;
+  if (!workingDir.empty())
+    process.setWorkingDirectory(QString::fromStdString(workingDir));
+
+  std::ostream* errStream = err ? err : out;
+
+  QObject::connect(
+      &process, &QProcess::readyReadStandardOutput, [out, &process]() {
+        out->write(process.readAllStandardOutput(), process.bytesAvailable());
+      });
+
+  QObject::connect(&process, &QProcess::readyReadStandardError,
+                   [errStream, &process]() {
+                     QByteArray data = process.readAllStandardError();
+                     errStream->write(data, data.size());
                    });
 
-  QObject::connect(m_process, &QProcess::readyReadStandardError,
-                   [result, m_process]() {
-                     QByteArray data = m_process->readAllStandardError();
-                     result->write(data, data.size());
-                   });
+  QString program = QString::fromStdString(command);
+  QStringList args_{};
+  for (const auto& ar : args) args_ << QString::fromStdString(ar);
+  m_processes.push_back(&process);
+  process.start(program, args_);
 
-  QString cmd{command.c_str()};
-  QStringList args = cmd.split(" ");
-  QString program = args.first();
-  args.pop_front();  // remove program
-  m_process->start(program, args);
+  bool finished = process.waitForFinished(timeout_ms);
+  auto it = std::find(m_processes.begin(), m_processes.end(), &process);
+  if (it != m_processes.end()) m_processes.erase(it);
 
-  m_process->waitForFinished(-1);
+  std::string message{};
+  if (!finished) {
+    message = process.errorString().toStdString();
+    (*errStream) << message << std::endl;
+  }
 
-  auto status = m_process->exitStatus();
-  auto exitCode = m_process->exitCode();
-  delete m_process;
-  m_process = nullptr;
+  auto status = process.exitStatus();
+  auto exitCode = process.exitCode();
+  int returnStatus =
+      finished ? (status == QProcess::NormalExit) ? exitCode : -1 : -1;
 
-  return (status == QProcess::NormalExit) ? exitCode : -1;
+  return {returnStatus, {message}};
 }
 
 time_t FileUtils::Mtime(const std::filesystem::path& path) {
@@ -236,6 +305,41 @@ bool FileUtils::IsUptoDate(const std::string& sourceFile,
   }
 
   return true;
+}
+
+std::string FileUtils::AdjustPath(const std::string& p) {
+  std::filesystem::path the_path = p;
+  return AdjustPath(the_path);
+}
+
+std::string FileUtils::AdjustPath(const std::filesystem::path& p) {
+  std::filesystem::path the_path = p;
+  if (!the_path.is_absolute()) {
+    the_path = std::filesystem::path("..") / p;
+  }
+  return the_path.string();
+}
+
+void FileUtils::printArgs(int argc, const char* argv[]) {
+  std::string res{};
+  for (int i = 0; i < argc; i++) res += std::string{argv[i]} + " ";
+  qDebug() << res.c_str();
+}
+
+void FileUtils::terminateSystemCommand() {
+  for (auto pr : m_processes) pr->terminate();
+}
+
+bool FileUtils::removeFile(const std::string& file) noexcept {
+  const std::filesystem::path path{file};
+  return removeFile(path);
+}
+
+bool FileUtils::removeFile(const std::filesystem::path& file) noexcept {
+  if (!FileExists(file)) return false;
+  std::error_code ec;
+  std::filesystem::remove_all(file, ec);
+  return ec.value() == 0;
 }
 
 }  // namespace FOEDAG

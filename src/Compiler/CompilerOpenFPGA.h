@@ -19,7 +19,6 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -35,7 +34,7 @@ enum class SynthesisType { Yosys, QL, RS };
 
 class CompilerOpenFPGA : public Compiler {
  public:
-  CompilerOpenFPGA() = default;
+  CompilerOpenFPGA() { m_name = "openfpga"; };
   ~CompilerOpenFPGA() = default;
   void AnalyzeExecPath(const std::filesystem::path& path) {
     m_analyzeExecutablePath = path;
@@ -58,6 +57,9 @@ class CompilerOpenFPGA : public Compiler {
   void ArchitectureFile(const std::filesystem::path& path) {
     m_architectureFile = path;
   }
+  void DeviceTagVersion(const std::string& version) {
+    m_deviceTagVersion = version;
+  }
   void YosysScript(const std::string& script) { m_yosysScript = script; }
   void OpenFPGAScript(const std::string& script) { m_openFPGAScript = script; }
   void OpenFpgaArchitectureFile(const std::filesystem::path& path) {
@@ -78,17 +80,36 @@ class CompilerOpenFPGA : public Compiler {
   void OpenFpgaPinmapXMLFile(const std::filesystem::path& path) {
     m_OpenFpgaPinMapXml = path;
   }
-  void OpenFpgaPinmapCSVFile(const std::filesystem::path& path) {
-    m_OpenFpgaPinMapCSV = path;
+  void OpenFpgaPinConstraintFile(const std::filesystem::path& path) {
+    m_OpenFpgaPinConstraintXml = path;
   }
+  void PbPinFixup(const std::string& name) { m_pb_pin_fixup = name; }
   void DeviceSize(const std::string& XxY) { m_deviceSize = XxY; }
+
+  void MaxDeviceDSPCount(uint32_t max_dsp) { m_maxDeviceDSPCount = max_dsp; }
+  void MaxDeviceBRAMCount(uint32_t max_bram) {
+    m_maxDeviceBRAMCount = max_bram;
+  }
+  void MaxDeviceLUTCount(uint32_t max_lut) { m_maxDeviceLUTCount = max_lut; }
+  void MaxDeviceFFCount(uint32_t max_ff) { m_maxDeviceFFCount = max_ff; }
+  void MaxDeviceIOCount(uint32_t max_io) { m_maxDeviceIOCount = max_io; }
+  uint32_t MaxDeviceDSPCount() { return m_maxDeviceDSPCount; }
+  uint32_t MaxDeviceBRAMCount() { return m_maxDeviceBRAMCount; }
+  uint32_t MaxDeviceLUTCount() { return m_maxDeviceLUTCount; }
+  uint32_t MaxDeviceFFCount() { return m_maxDeviceFFCount; }
+  uint32_t MaxDeviceIOCount() { return m_maxDeviceIOCount; }
+  void MaxUserDSPCount(uint32_t max_dsp) { m_maxUserDSPCount = max_dsp; }
+  void MaxUserBRAMCount(uint32_t max_bram) { m_maxUserBRAMCount = max_bram; }
+  uint32_t MaxUserDSPCount() { return m_maxUserDSPCount; }
+  uint32_t MaxUserBRAMCount() { return m_maxUserBRAMCount; }
+
   void Help(std::ostream* out);
   void Version(std::ostream* out);
   void KeepAllSignals(bool on) { m_keepAllSignals = on; }
   const std::string& YosysPluginLibName() { return m_yosysPluginLib; }
   const std::string& YosysPluginName() { return m_yosysPlugin; }
   const std::string& YosysMapTechnology() { return m_mapToTechnology; }
-
+  const std::string& DeviceTagVersion() { return m_deviceTagVersion; }
   void YosysPluginLibName(const std::string& libname) {
     m_yosysPluginLib = libname;
   }
@@ -107,12 +128,6 @@ class CompilerOpenFPGA : public Compiler {
     m_perDevicePnROptions = options;
   }
 
-  bool UseVerilogNetlist() { return m_useVerilogNetlist; }
-  void UseVerilogNetlist(bool on) { m_useVerilogNetlist = on; }
-
-  bool UseEdifNetlist() { return m_useEdifNetlist; }
-  void UseEdifNetlist(bool on) { m_useEdifNetlist = on; }
-
  protected:
   virtual bool IPGenerate();
   virtual bool Analyze();
@@ -126,18 +141,29 @@ class CompilerOpenFPGA : public Compiler {
   virtual bool PowerAnalysis();
   virtual bool GenerateBitstream();
   virtual bool LoadDeviceData(const std::string& deviceName);
+  virtual bool LoadDeviceData(const std::string& deviceName,
+                              const std::filesystem::path& deviceListFile);
   virtual bool LicenseDevice(const std::string& deviceName);
   virtual bool DesignChanged(const std::string& synth_script,
                              const std::filesystem::path& synth_scrypt_path,
                              const std::filesystem::path& outputFile);
+  virtual void reloadSettings();
+  virtual std::vector<std::string> GetCleanFiles(
+      Action action, const std::string& projectName,
+      const std::string& topModule) const;
   virtual std::string InitSynthesisScript();
   virtual std::string FinishSynthesisScript(const std::string& script);
+  virtual std::string InitAnalyzeScript();
+  virtual std::string FinishAnalyzeScript(const std::string& script);
   virtual std::string InitOpenFPGAScript();
   virtual std::string FinishOpenFPGAScript(const std::string& script);
   virtual bool RegisterCommands(TclInterpreter* interp, bool batchMode);
   virtual std::pair<bool, std::string> IsDeviceSizeCorrect(
       const std::string& size) const;
   bool VerifyTargetDevice() const;
+  static std::filesystem::path copyLog(FOEDAG::ProjectManager* projManager,
+                                       const std::string& srcFileName,
+                                       const std::string& destFileName);
   std::filesystem::path m_yosysExecutablePath = "yosys";
   std::filesystem::path m_analyzeExecutablePath = "analyze";
   SynthesisType m_synthType = SynthesisType::Yosys;
@@ -167,10 +193,19 @@ class CompilerOpenFPGA : public Compiler {
   std::filesystem::path m_OpenFpgaRepackConstraintsFile = "";
   std::filesystem::path m_OpenFpgaFabricKeyFile = "";
   std::filesystem::path m_OpenFpgaPinMapXml = "";
-  std::filesystem::path m_OpenFpgaPinMapCSV = "";
+  std::filesystem::path m_OpenFpgaPinConstraintXml = "";
+  std::string m_deviceTagVersion;
   std::string m_deviceSize;
   std::string m_yosysScript;
   std::string m_openFPGAScript;
+  std::string m_pb_pin_fixup;
+  uint32_t m_maxDeviceDSPCount = 0;
+  uint32_t m_maxDeviceBRAMCount = 0;
+  uint32_t m_maxDeviceLUTCount = 0;
+  uint32_t m_maxDeviceFFCount = 0;
+  uint32_t m_maxDeviceIOCount = 0;
+  uint32_t m_maxUserDSPCount = 0;
+  uint32_t m_maxUserBRAMCount = 0;
   virtual std::string BaseVprCommand();
   virtual std::string BaseStaCommand();
   virtual std::string BaseStaScript(std::string libFileName,
@@ -178,8 +213,6 @@ class CompilerOpenFPGA : public Compiler {
                                     std::string sdfFileName,
                                     std::string sdcFileName);
   bool m_keepAllSignals = false;
-  bool m_useVerilogNetlist = false;
-  bool m_useEdifNetlist = false;
 };
 
 }  // namespace FOEDAG

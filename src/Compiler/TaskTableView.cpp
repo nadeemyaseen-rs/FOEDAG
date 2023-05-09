@@ -24,29 +24,32 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <QBoxLayout>
 #include <QDebug>
 #include <QHeaderView>
+#include <QLabel>
 #include <QMenu>
+#include <QMovie>
 #include <QPushButton>
 
 #include "NewProject/ProjectManager/project.h"
 #include "NewProject/ProjectManager/project_manager.h"
+#include "TaskGlobal.h"
 #include "TaskManager.h"
 
 inline void initializeResources() { Q_INIT_RESOURCE(compiler_resources); }
 namespace FOEDAG {
 
+const QString TaskTableView::TasksDelegate::LOADING_GIF = ":/loading.gif";
+
 TaskTableView::TaskTableView(TaskManager *tManager, QWidget *parent)
     : QTableView(parent), m_taskManager(tManager) {
   verticalHeader()->hide();
-  setItemDelegateForColumn(1, new ChildItemDelegate);
+  auto delegate = new TasksDelegate(*this, this);
+  setItemDelegateForColumn(StatusCol, delegate);
+  setItemDelegateForColumn(TitleCol, delegate);
   setContextMenuPolicy(Qt::CustomContextMenu);
   connect(this, SIGNAL(customContextMenuRequested(const QPoint &)), this,
           SLOT(customMenuRequested(const QPoint &)));
   setSelectionBehavior(QAbstractItemView::SelectionBehavior::SelectItems);
   setSelectionMode(QAbstractItemView::SelectionMode::SingleSelection);
-  connect(m_taskManager, &TaskManager::taskStateChanged, this, [this]() {
-    m_viewDisabled = m_taskManager->status() == TaskStatus::InProgress;
-    viewport()->setEnabled(!m_viewDisabled);
-  });
   initializeResources();
 }
 
@@ -55,7 +58,7 @@ void TaskTableView::mousePressEvent(QMouseEvent *event) {
   if (idx.column() == TitleCol) {
     bool expandAreaClicked = expandArea(idx).contains(event->pos());
     if (expandAreaClicked) {
-      model()->setData(idx, expandAreaClicked, ExpandAreaRole);
+      model()->setData(idx, ExpandAreaAction::Invert, ExpandAreaRole);
     }
   }
 
@@ -77,8 +80,11 @@ void TaskTableView::mouseDoubleClickEvent(QMouseEvent *event) {
 void TaskTableView::setModel(QAbstractItemModel *model) {
   QTableView::setModel(model);
   for (int i = 0; i < this->model()->rowCount(); i++) {
-    auto task = m_taskManager->task(
-        this->model()->data(this->model()->index(i, 0), TaskId).toUInt());
+    auto statusIndex = this->model()->index(i, StatusCol);
+    // Table view can't play gif animations automatically, so we set QLabel,
+    // which can.
+    setIndexWidget(statusIndex, new QLabel);
+    auto task = m_taskManager->task(statusIndex.data(TaskId).toUInt());
     if (task && ((task->type() == TaskType::Settings) ||
                  (task->type() == TaskType::Button))) {
       auto index = this->model()->index(i, TitleCol);
@@ -96,6 +102,11 @@ void TaskTableView::setModel(QAbstractItemModel *model) {
   }
 }
 
+void TaskTableView::setViewDisabled(bool disabled) {
+  m_viewDisabled = disabled;
+  viewport()->setEnabled(!m_viewDisabled);
+}
+
 void TaskTableView::customMenuRequested(const QPoint &pos) {
   // We only disabled the viewport in order to have scrollbar enabled.
   // Mouse events keep on coming in this case though, so we catch them manually.
@@ -103,20 +114,42 @@ void TaskTableView::customMenuRequested(const QPoint &pos) {
   QModelIndex index = indexAt(pos);
   if (index.column() == TitleCol) {
     auto task = m_taskManager->task(model()->data(index, TaskId).toUInt());
-    if (task && task->type() != TaskType::Settings) {
-      QMenu *menu = new QMenu(this);
+    if (!task) return;
+    if (task->type() == TaskType::Button || task->type() == TaskType::Settings)
+      return;
+
+    QMenu *menu = new QMenu(this);
+    if (task->type() != TaskType::None) {
       QAction *start = new QAction("Run", this);
       connect(start, &QAction::triggered, this,
               [this, index]() { userActionHandle(index); });
       menu->addAction(start);
+      if (task->cleanTask() != nullptr) {
+        QAction *clean = new QAction("Clean", this);
+        connect(clean, &QAction::triggered, this,
+                [this, index]() { userActionCleanHandle(index); });
+        menu->addAction(clean);
+      }
+      if (TaskManager::isSimulation(task)) {
+        QAction *view = new QAction("View waveform", this);
+        connect(view, &QAction::triggered, this,
+                [this, task]() { emit ViewWaveform(task); });
+        menu->addAction(view);
+      }
       addTaskLogAction(menu, task);
-      menu->popup(viewport()->mapToGlobal(pos));
+      menu->addSeparator();
     }
+    addExpandCollapse(menu);
+    menu->popup(viewport()->mapToGlobal(pos));
   }
 }
 
 void TaskTableView::userActionHandle(const QModelIndex &index) {
   model()->setData(index, QVariant(), UserActionRole);
+}
+
+void TaskTableView::userActionCleanHandle(const QModelIndex &index) {
+  model()->setData(index, QVariant(), UserActionCleanRole);
 }
 
 void TaskTableView::dataChanged(const QModelIndex &topLeft,
@@ -139,7 +172,8 @@ QRect TaskTableView::expandArea(const QModelIndex &index) const {
   opt.rect = visualRect(index);
   auto r = style()->proxy()->subElementRect(QStyle::SE_ItemViewItemDecoration,
                                             &opt, this);
-  int h = rowHeight(0);
+  int h = rowHeight(index.row());
+  r.setTopLeft(r.topLeft() + QPoint{20, 0});  //  move out of the check box
   r.setSize({h, h});
   return r;
 }
@@ -166,24 +200,89 @@ void TaskTableView::addTaskLogAction(QMenu *menu, FOEDAG::Task *task) {
   QString viewLogStr = "View " + title + " Logs";
   QAction *viewLog = new QAction(viewLogStr, this);
   logFilePath.replace(PROJECT_OSRCDIR, Project::Instance()->projectPath());
-  if (!QFile(logFilePath).exists()) {
-    viewLog->setEnabled(false);
-  }
+  auto logExists = QFile::exists(logFilePath);
+  viewLog->setEnabled(logExists);
   connect(viewLog, &QAction::triggered, this,
           [this, logFilePath]() { emit ViewFileRequested(logFilePath); });
   menu->addAction(viewLog);
+
+  auto taskId = m_taskManager->taskId(task);
+  auto reportManager =
+      m_taskManager->getReportManagerRegistry().getReportManager(taskId);
+  if (reportManager) {
+    for (auto &reportId : reportManager->getAvailableReportIds()) {
+      auto viewReportStr = "View " + reportId;
+      auto *viewReport = new QAction(viewReportStr, this);
+      viewReport->setEnabled(logExists);
+      connect(viewReport, &QAction::triggered, this, [this, task, reportId]() {
+        emit ViewReportRequested(task, reportId);
+      });
+      menu->addAction(viewReport);
+    }
+  }
 }
 
-void ChildItemDelegate::paint(QPainter *painter,
-                              const QStyleOptionViewItem &option,
-                              const QModelIndex &index) const {
-  if (index.data(ParentDataRole).toBool()) {
+void TaskTableView::addExpandCollapse(QMenu *menu) {
+  auto areaAction = [this](ExpandAreaAction action) {
+    for (int row{0}; row < model()->rowCount(); row++)
+      model()->setData(model()->index(row, TitleCol),
+                       QVariant::fromValue(action), ExpandAreaRole);
+  };
+  QAction *expandAll = new QAction{"Expand All", this};
+  connect(expandAll, &QAction::triggered, this,
+          [areaAction]() { areaAction(ExpandAreaAction::Expand); });
+  menu->addAction(expandAll);
+  QAction *collapse = new QAction{"Collapse All", this};
+  connect(collapse, &QAction::triggered, this,
+          [areaAction]() { areaAction(ExpandAreaAction::Collapse); });
+  menu->addAction(collapse);
+}
+
+TaskTableView::TasksDelegate::TasksDelegate(TaskTableView &view,
+                                            QObject *parent)
+    : QStyledItemDelegate(parent),
+      m_view{view},
+      m_inProgressMovie{new QMovie(LOADING_GIF, {}, &view)} {}
+
+void TaskTableView::TasksDelegate::paint(QPainter *painter,
+                                         const QStyleOptionViewItem &option,
+                                         const QModelIndex &index) const {
+  if (index.column() == TitleCol && index.data(ParentDataRole).toBool()) {
     QStyleOptionViewItem opt = option;
     initStyleOption(&opt, index);
     const QWidget *widget = option.widget;
     QStyle *style = widget ? widget->style() : QApplication::style();
     opt.rect.setTopLeft(opt.rect.topLeft() - QPoint(-30, 0));
     style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
+    return;
+  }
+  if (index.column() == StatusCol) {
+    auto statusData = index.data(Qt::DecorationRole);
+    auto label = qobject_cast<QLabel *>(m_view.indexWidget(index));
+    if (!label) return;
+    // QTableView can't paint animations. Do it manually via QLabel.
+    if (statusData.type() == QVariant::Bool) {
+      label->setMovie(m_inProgressMovie);
+      // Place the animation to cells left side, similar to other decorations
+      label->move(m_view.visualRect(index).center() -
+                  (label->rect().center() - QPoint{6, 0}));
+      m_inProgressMovie->start();
+      return;
+    } else {
+      // Reset the movie when task is no longer in progress
+      label->setMovie(nullptr);
+    }
+
+    QStyleOptionViewItem opt = option;
+    initStyleOption(&opt, index);
+    opt.decorationAlignment = Qt::AlignCenter;
+    opt.decorationPosition = QStyleOptionViewItem::Top;
+    opt.decorationSize = QSize{20, 20};
+    opt.showDecorationSelected = false;
+    QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
+    opt.icon = icon;
+    opt.rect = opt.rect.adjusted(0, 4, 0, 0);
+    QStyledItemDelegate::paint(painter, opt, index);
     return;
   }
   QStyledItemDelegate::paint(painter, option, index);

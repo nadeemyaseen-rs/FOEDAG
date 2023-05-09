@@ -56,6 +56,8 @@ class SourcesForm : public QWidget {
                            const QStringList& paramList);
   void IpRemoveRequested(const QString& moduleName);
   void IpDeleteRequested(const QString& moduleName);
+  void IpSimulationRequested(const QString& moduleName);
+  void IpWaveFormRequest(const QString& moduleName);
   void OpenProjectSettings();
 
  private slots:
@@ -77,6 +79,8 @@ class SourcesForm : public QWidget {
   void SlotReConfigureIp();
   void SlotRemoveIp();
   void SlotDeleteIp();
+  void SlotSimulateIp();
+  void SlotWaveForm();
 
  private:
   Ui::SourcesForm* ui;
@@ -96,6 +100,8 @@ class SourcesForm : public QWidget {
   QAction* m_actReconfigureIp;
   QAction* m_actRemoveIp;
   QAction* m_actDeleteIp;
+  QAction* m_simulateIp;
+  QAction* m_waveFormView;
   QAction* m_actProjectSettings;
 
   ProjectManager* m_projManager;
@@ -111,6 +117,7 @@ class SourcesForm : public QWidget {
   static QString StripPath(const QString& path);
   void showAddFileDialog(GridType gridType);
   void AddIpInstanceTree(QTreeWidgetItem* topItem);
+  QStringList SelectedIpModules() const;
 };
 }  // namespace FOEDAG
 

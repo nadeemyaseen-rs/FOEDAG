@@ -1,8 +1,17 @@
 #include "editor.h"
 
+#include <math.h>
+
+#include "Qsci/qsciapis.h"
+#include "Qsci/qscilexercpp.h"
+#include "Qsci/qscilexertcl.h"
+#include "Qsci/qscilexerverilog.h"
+#include "Qsci/qscilexervhdl.h"
+
 using namespace FOEDAG;
 
 #define ERROR_MARKER 4
+#define WARN_MARKER 5
 
 Editor::Editor(QString strFileName, int iFileType, QWidget *parent)
     : QWidget(parent) {
@@ -21,6 +30,8 @@ Editor::Editor(QString strFileName, int iFileType, QWidget *parent)
           SLOT(QscintillaSelectionChanged()));
   connect(m_scintilla, SIGNAL(modificationChanged(bool)), this,
           SLOT(QscintillaModificationChanged(bool)));
+  connect(m_scintilla, SIGNAL(linesChanged()), this,
+          SLOT(QscintillaLinesChanged()));
 
   QBoxLayout *box = new QBoxLayout(QBoxLayout::TopToBottom);
   box->setContentsMargins(0, 0, 0, 0);
@@ -31,11 +42,19 @@ Editor::Editor(QString strFileName, int iFileType, QWidget *parent)
   QImage img(":/images/error.png");
   img = img.scaled(15, 15);
   m_scintilla->markerDefine(img, ERROR_MARKER);
+
+  img = QImage(":/img/warn.png");
+  img = img.scaled(15, 15);
+  m_scintilla->markerDefine(img, WARN_MARKER);
 }
 
 QString Editor::getFileName() const { return m_strFileName; }
 
 bool Editor::isModified() const { return m_scintilla->isModified(); }
+
+void Editor::SetFileWatcher(QFileSystemWatcher *watcher) {
+  m_fileWatcher = watcher;
+}
 
 void Editor::FindFirst(const QString &strWord) {
   m_scintilla->findFirst(strWord, true, true, true, true, false);
@@ -62,11 +81,29 @@ void Editor::ReplaceAll(const QString &strFind, const QString &strDesWord) {
   }
 }
 
-void Editor::markLine(int line) {
+void Editor::markLineError(int line) {
   m_scintilla->markerAdd(line - 1, ERROR_MARKER);
+  m_scintilla->ensureLineVisible(line - 1);
+}
+
+void Editor::markLineWarning(int line) {
+  m_scintilla->markerAdd(line - 1, WARN_MARKER);
+  m_scintilla->ensureLineVisible(line - 1);
+}
+
+void Editor::selectLines(int lineFrom, int lineTo) {
+  m_scintilla->setSelection(lineFrom, 0, lineTo,
+                            m_scintilla->lineLength(lineTo));
+  // VISIBLE_STRICT policy makes sure line is in the middle of the screen.
+  // VISIBLE_SLOP, on the other hand, just makess sure line is visible
+  m_scintilla->SendScintilla(QsciScintilla::SCI_SETVISIBLEPOLICY,
+                             QsciScintilla::VISIBLE_STRICT);
+  m_scintilla->ensureLineVisible(lineFrom);
 }
 
 void Editor::clearMarkers() { m_scintilla->markerDeleteAll(ERROR_MARKER); }
+
+void Editor::reload() { SetScintillaText(m_strFileName); }
 
 void Editor::Search() {
   QString strWord = "";
@@ -82,12 +119,18 @@ void Editor::Save() {
     return;
   }
 
+  // avoid trigger file watching during save
+  m_fileWatcher->removePath(m_strFileName);
   QTextStream out(&file);
   QApplication::setOverrideCursor(Qt::WaitCursor);
   out << m_scintilla->text();
   QApplication::restoreOverrideCursor();
 
   m_scintilla->setModified(false);
+  // QTimer::singleShot is used here to run lambda at the end of the event
+  // queue. We must wait all events because file is saved to device later.
+  QTimer::singleShot(1, this,
+                     [this]() { m_fileWatcher->addPath(m_strFileName); });
 }
 
 void Editor::Undo() { m_scintilla->undo(); }
@@ -109,6 +152,19 @@ void Editor::QscintillaSelectionChanged() { UpdateToolBarStates(); }
 void Editor::QscintillaModificationChanged(bool m) {
   m_actSave->setEnabled(m);
   emit EditorModificationChanged(m);
+}
+
+void Editor::QscintillaLinesChanged() {
+  int lines = m_scintilla->lines();
+  int minWidth{MIN_MARGIN_WIDTH};
+  int newWidth = floor(log10(lines) + 1) + 1;
+
+  minWidth = std::max(minWidth, newWidth);
+  if (minWidth != m_marginWidth && minWidth >= MIN_MARGIN_WIDTH) {
+    m_marginWidth = minWidth;
+    m_scintilla->setMarginWidth(MARGIN_INDEX,
+                                QString{}.fill('0', m_marginWidth));
+  }
 }
 
 void Editor::QScintillaTextChanged() { UpdateToolBarStates(); }
@@ -195,8 +251,7 @@ void Editor::InitToolBar() {
 void Editor::InitScintilla(int iFileType) {
   QFont font("Arial", 9, QFont::Normal);
   m_scintilla->setFont(font);
-  QFontMetrics fontmetrics = QFontMetrics(font);
-  m_scintilla->setMarginWidth(0, 27 /*fontmetrics.width("0000")*/);
+  m_scintilla->setMarginWidth(MARGIN_INDEX, QString{}.fill('0', m_marginWidth));
 
   m_scintilla->setMarginType(0, QsciScintilla::NumberMargin);
   m_scintilla->setMarginLineNumbers(0, true);
@@ -205,17 +260,18 @@ void Editor::InitScintilla(int iFileType) {
   m_scintilla->setIndentationGuides(QsciScintilla::SC_IV_LOOKBOTH);
   m_scintilla->setBraceMatching(QsciScintilla::SloppyBraceMatch);
 
-  QsciLexer *textLexer;
+  QsciLexer *textLexer{nullptr};
   if (FILE_TYPE_VERILOG == iFileType) {
     textLexer = new QsciLexerVerilog(m_scintilla);
   } else if (FILE_TYPE_VHDL == iFileType) {
     textLexer = new QsciLexerVHDL(m_scintilla);
   } else if (FILE_TYPE_TCL == iFileType) {
     textLexer = new QsciLexerTCL(m_scintilla);
+  } else if (FILE_TYPE_CPP == iFileType) {
+    textLexer = new QsciLexerCPP(m_scintilla);
   }
 
-  if (FILE_TYPE_VERILOG == iFileType || FILE_TYPE_VHDL == iFileType ||
-      FILE_TYPE_TCL == iFileType) {
+  if (textLexer) {
     m_scintilla->setLexer(textLexer);
 
     QsciAPIs *apis = new QsciAPIs(textLexer);
@@ -248,6 +304,8 @@ void Editor::SetScintillaText(QString strFileName) {
   QApplication::restoreOverrideCursor();
 
   m_scintilla->setModified(false);
+  // update line numbers margin width
+  QscintillaLinesChanged();
 }
 
 void Editor::UpdateToolBarStates() {

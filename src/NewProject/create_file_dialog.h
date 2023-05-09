@@ -14,10 +14,20 @@ namespace FOEDAG {
 class createFileDialog : public QDialog {
   Q_OBJECT
 
+  enum FileType {
+    Verilog,
+    SystemVerilog,
+    VHDL,
+    Cpp,
+    Pin,
+    Sdc,
+  };
+
  public:
   explicit createFileDialog(const QString &projectPath,
                             QWidget *parent = nullptr);
   ~createFileDialog();
+  static bool verifyFileName(const QString &fileName, QWidget *parent);
 
   void initialDialog(int type);
  signals:
@@ -30,6 +40,7 @@ class createFileDialog : public QDialog {
 
  private:
   bool FileExists(const filedata &fData) const;
+  static QString AppendExtension(const QString &fileName, const QString &ext);
 
  private:
   Ui::createFileDialog *ui;

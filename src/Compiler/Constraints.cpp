@@ -18,12 +18,17 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
-
 #include "Compiler/Constraints.h"
+
+#include "Compiler/Compiler.h"
+#include "MainWindow/Session.h"
+#include "Utils/StringUtils.h"
 
 using namespace FOEDAG;
 
-Constraints::Constraints() {
+constexpr auto TimingLimitErrorMessage{"Invalid setting for -period: 0.1 1000"};
+
+Constraints::Constraints(Compiler* compiler) : m_compiler(compiler) {
   m_interp = new TclInterpreter("");
   registerCommands(m_interp);
 }
@@ -53,6 +58,23 @@ static std::string getConstraint(uint64_t argc, const char* argv[]) {
   return command;
 }
 
+static bool verifyTimingLimits(uint64_t argc, const char* argv[]) {
+  for (uint64_t i = 0; i < argc; i++) {
+    std::string command = std::string(argv[i]);
+    if (command == "create_clock") {
+      for (uint64_t j = i + 1; j < argc - 1; j++) {
+        command = std::string(argv[j]);
+        if (command == "-period") {
+          auto value = std::string(argv[j + 1]);
+          double period = std::stod(value);
+          if ((period < 0.1) || (period > 1000)) return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
 static std::vector<std::string> constraint_procs = {
     //"write_sdc",
     "current_instance", "set_hierarchy_separator", "check_path_divider",
@@ -65,14 +87,17 @@ static std::vector<std::string> constraint_procs = {
     //"get_clocks",
     "get_lib_cells", "get_lib_pins", "check_nocase_flag", "get_libs",
     "find_liberty_libraries_matching",
-    // "get_nets", "get_pins",
+    // "get_nets",
+    // "get_pins",
     "filter_pins1",
     // "get_ports",
-    "filter_ports1", "create_clock", "create_generated_clock", "group_path",
-    "check_exception_pins", "set_clock_gating_check", "set_clock_gating_check1",
-    "set_clock_groups", "set_clock_latency", "set_sense", "set_clock_sense",
-    "set_clock_sense_cmd1", "set_clock_transition", "set_clock_uncertainty",
-    "set_data_check", "set_disable_timing", "set_disable_timing_instance",
+    "filter_ports1",
+    // "create_clock",
+    "create_generated_clock", "group_path", "check_exception_pins",
+    "set_clock_gating_check", "set_clock_gating_check1", "set_clock_groups",
+    "set_clock_latency", "set_sense", "set_clock_sense", "set_clock_sense_cmd1",
+    "set_clock_transition", "set_clock_uncertainty", "set_data_check",
+    "set_disable_timing", "set_disable_timing_instance",
     "parse_disable_inst_ports", "set_disable_timing_cell",
     "parse_disable_cell_ports", "set_false_path", "set_ideal_latency",
     "set_ideal_network", "set_ideal_transition", "set_input_delay",
@@ -111,6 +136,8 @@ void Constraints::registerCommands(TclInterpreter* interp) {
   // https://github.com/The-OpenROAD-Project/OpenSTA/blob/master/tcl/Sdc.tcl
   // Register all SDC commands, extract the "keeps"
 
+  // Checks for the sub-syntax supported by VPR
+
   auto name_harvesting_sdc_command = [](void* clientData, Tcl_Interp* interp,
                                         int argc, const char* argv[]) -> int {
     Constraints* constraints = (Constraints*)clientData;
@@ -126,11 +153,58 @@ void Constraints::registerCommands(TclInterpreter* interp) {
         if (arg != "{*}") constraints->addKeep(arg);
       }
     }
-    return 0;
+    return TCL_OK;
   };
   for (auto proc_name : constraint_procs) {
     interp->registerCmd(proc_name, name_harvesting_sdc_command, this, 0);
   }
+
+  auto create_clock = [](void* clientData, Tcl_Interp* interp, int argc,
+                         const char* argv[]) -> int {
+    Constraints* constraints = (Constraints*)clientData;
+    if (!verifyTimingLimits(argc, argv)) {
+      Tcl_AppendResult(interp, TimingLimitErrorMessage, nullptr);
+      return TCL_ERROR;
+    }
+    const std::string constraint = getConstraint(argc, argv);
+    constraints->addConstraint(constraint);
+    for (int i = 1; i < argc; i++) {
+      std::string arg = argv[i];
+      if (arg == "-name") {
+        i++;
+        arg = argv[i];
+        if (arg != "{*}") constraints->addKeep(arg);
+      } else if (arg == "-period") {
+        i++;
+      } else if (arg == "-waveform") {
+        i++;
+      } else if (arg.find("-") != std::string::npos) {
+        Tcl_AppendResult(
+            interp,
+            strdup(
+                (std::string(
+                     "ERROR: Illegal option for create_clock, check manual: ") +
+                 arg)
+                    .c_str()),
+            (char*)NULL);
+        return TCL_ERROR;
+      } else if (arg.find("[") != std::string::npos) {
+        Tcl_AppendResult(
+            interp,
+            strdup(
+                (std::string(
+                     "ERROR: Illegal option for create_clock, check manual: ") +
+                 arg)
+                    .c_str()),
+            (char*)NULL);
+        return TCL_ERROR;
+      } else {
+        if (arg != "{*}") constraints->addKeep(arg);
+      }
+    }
+    return TCL_OK;
+  };
+  interp->registerCmd("create_clock", create_clock, this, 0);
 
   auto getter_sdc_command = [](void* clientData, Tcl_Interp* interp, int argc,
                                const char* argv[]) -> int {
@@ -158,6 +232,39 @@ void Constraints::registerCommands(TclInterpreter* interp) {
   auto pin_loc = [](void* clientData, Tcl_Interp* interp, int argc,
                     const char* argv[]) -> int {
     Constraints* constraints = (Constraints*)clientData;
+    if (!verifyTimingLimits(argc, argv)) {
+      Tcl_AppendResult(interp, TimingLimitErrorMessage, nullptr);
+      return TCL_ERROR;
+    }
+    auto constraint = getConstraint(argc, argv);
+    constraints->addConstraint(constraint);
+    if ((argc != 3) && (argc != 4)) {
+      Tcl_AppendResult(
+          interp,
+          strdup(std::string("set_pin_loc command takes 2 or 3 arguments: " +
+                             constraint)
+                     .c_str()),
+          (char*)NULL);
+      return TCL_ERROR;
+    }
+    for (int i = 0; i < argc; i++) {
+      std::string arg = argv[i];
+      if (arg == "-name") {
+        i++;
+        if (std::string(argv[i]) != "{*}") constraints->addKeep(argv[i]);
+      }
+    }
+    return TCL_OK;
+  };
+  interp->registerCmd("set_pin_loc", pin_loc, this, 0);
+
+  auto set_mode = [](void* clientData, Tcl_Interp* interp, int argc,
+                     const char* argv[]) -> int {
+    Constraints* constraints = (Constraints*)clientData;
+    if (!verifyTimingLimits(argc, argv)) {
+      Tcl_AppendResult(interp, TimingLimitErrorMessage, nullptr);
+      return TCL_ERROR;
+    }
     constraints->addConstraint(getConstraint(argc, argv));
     for (int i = 0; i < argc; i++) {
       std::string arg = argv[i];
@@ -166,15 +273,68 @@ void Constraints::registerCommands(TclInterpreter* interp) {
         if (std::string(argv[i]) != "{*}") constraints->addKeep(argv[i]);
       }
     }
-    return 0;
+    return TCL_OK;
   };
-  interp->registerCmd("set_pin_loc", pin_loc, this, 0);
-  interp->registerCmd("set_mode", pin_loc, this, 0);
-  interp->registerCmd("set_property", pin_loc, this, 0);
+  interp->registerCmd("set_mode", set_mode, this, 0);
+
+  auto set_property = [](void* clientData, Tcl_Interp* interp, int argc,
+                         const char* argv[]) -> int {
+    Constraints* constraints = (Constraints*)clientData;
+    if (!verifyTimingLimits(argc, argv)) {
+      Tcl_AppendResult(interp, TimingLimitErrorMessage, nullptr);
+      return TCL_ERROR;
+    }
+    constraints->addConstraint(getConstraint(argc, argv));
+    for (int i = 0; i < argc; i++) {
+      std::string arg = argv[i];
+      if (arg == "-name") {
+        i++;
+        if (std::string(argv[i]) != "{*}") constraints->addKeep(argv[i]);
+      }
+    }
+    return TCL_OK;
+  };
+  interp->registerCmd("set_property", set_property, this, 0);
+
+  auto set_clock_pin = [](void* clientData, Tcl_Interp* interp, int argc,
+                          const char* argv[]) -> int {
+    Constraints* constraints = (Constraints*)clientData;
+    if (!verifyTimingLimits(argc, argv)) {
+      Tcl_AppendResult(interp, TimingLimitErrorMessage, nullptr);
+      return TCL_ERROR;
+    }
+    constraints->addConstraint(getConstraint(argc, argv));
+    for (int i = 0; i < argc; i++) {
+      std::string arg = argv[i];
+      if (arg == "-name") {
+        i++;
+        if (std::string(argv[i]) != "{*}") constraints->addKeep(argv[i]);
+      }
+    }
+
+    return TCL_OK;
+  };
+  interp->registerCmd("set_clock_pin", set_clock_pin, this, 0);
+
+  auto script_path = [](void* clientData, Tcl_Interp* interp, int argc,
+                        const char* argv[]) -> int {
+    Constraints* constraints = (Constraints*)clientData;
+
+    std::filesystem::path script =
+        constraints->GetCompiler()->GetSession()->CmdLine()->Script();
+    std::filesystem::path scriptPath = script.parent_path();
+    Tcl_SetResult(interp, (char*)scriptPath.c_str(), TCL_VOLATILE);
+    return TCL_OK;
+  };
+  interp->registerCmd("script_path", script_path, this, 0);
 
   auto region_loc = [](void* clientData, Tcl_Interp* interp, int argc,
                        const char* argv[]) -> int {
     Constraints* constraints = (Constraints*)clientData;
+    if (!verifyTimingLimits(argc, argv)) {
+      Tcl_AppendResult(interp, TimingLimitErrorMessage, nullptr);
+      return TCL_ERROR;
+    }
     constraints->addConstraint(getConstraint(argc, argv));
     for (int i = 0; i < argc; i++) {
       std::string arg = argv[i];
@@ -183,13 +343,12 @@ void Constraints::registerCommands(TclInterpreter* interp) {
         if (std::string(argv[i]) != "{*}") constraints->addKeep(argv[i]);
       }
     }
-    return 0;
+    return TCL_OK;
   };
   interp->registerCmd("set_region_loc", region_loc, this, 0);
 
   auto read_sdc = [](void* clientData, Tcl_Interp* interp, int argc,
                      const char* argv[]) -> int {
-    Constraints* constraints = (Constraints*)clientData;
     if (argc < 2) {
       Tcl_AppendResult(interp, "ERROR: Specify an sdc file", (char*)NULL);
       return TCL_ERROR;
@@ -200,7 +359,8 @@ void Constraints::registerCommands(TclInterpreter* interp) {
     if (!stream.good()) {
       Tcl_AppendResult(
           interp,
-          std::string("ERROR: Cannot open the SDC file:" + fileName).c_str(),
+          strdup(std::string("ERROR: Cannot open the SDC file:" + fileName)
+                     .c_str()),
           (char*)NULL);
       return TCL_ERROR;
     }
@@ -227,10 +387,8 @@ void Constraints::registerCommands(TclInterpreter* interp) {
     stream.close();
     text = replaceAll(text, "[*]", "@*@");
     text = replaceAll(text, "{*}", "@*@");
-    constraints->reset();
     int status = Tcl_Eval(interp, text.c_str());
     if (status) {
-      Tcl_EvalEx(interp, "puts $errorInfo", -1, 0);
       return TCL_ERROR;
     }
     return TCL_OK;
@@ -250,8 +408,9 @@ void Constraints::registerCommands(TclInterpreter* interp) {
     if (!stream.good()) {
       Tcl_AppendResult(
           interp,
-          std::string("ERROR: Cannot open the SDC file for writing:" + fileName)
-              .c_str(),
+          strdup(std::string("ERROR: Cannot open the SDC file for writing:" +
+                             fileName)
+                     .c_str()),
           (char*)NULL);
       return TCL_ERROR;
     }

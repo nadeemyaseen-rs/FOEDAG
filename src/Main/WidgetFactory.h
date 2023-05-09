@@ -29,6 +29,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <QFormLayout>
 #include <QLineEdit>
 #include <QRadioButton>
+#include <QTextEdit>
 
 #include "nlohmann_json/json.hpp"
 using json = nlohmann::ordered_json;
@@ -40,8 +41,28 @@ using tclArgFnMap = std::map<std::string, tclArgFns>;
 
 #define SETTINGS_WIDGET_SUFFIX "SettingsWidget"
 #define DlgBtnBoxName "SettingsDialogButtonBox"
+#define WF_SPACE "_TclArgSpace_"
+#define WF_NEWLINE "_TclArgNewLine_"
+#define WF_DASH "_TclArgDash_"
 
 namespace FOEDAG {
+
+/*!
+ * \brief The LineEdit class
+ * This class will emit editingFinished() even if input is not accepted.
+ */
+class LineEdit : public QLineEdit {
+ public:
+  LineEdit(QWidget* parent = nullptr);
+
+ protected:
+  void focusOutEvent(QFocusEvent* e) override;
+  void keyPressEvent(QKeyEvent* event) override;
+};
+
+constexpr bool addUnsetDefault{false};
+QString convertAll(const QString& str);
+QString restoreAll(const QString& str);
 void initTclArgFns();
 void clearTclArgFns();
 void addTclArgFns(const std::string& tclArgKey, tclArgFns argFns);
@@ -70,11 +91,15 @@ QWidget* createContainerWidget(QWidget* widget,
                                const QString& label = QString());
 QComboBox* createComboBox(
     const QString& objectName, const QStringList& options,
-    const QString& selectedValue = "",
+    const QStringList& lookup, const QString& selectedValue = "",
+    bool addUnset = addUnsetDefault,
     std::function<void(QComboBox*, const QString&)> onChange = nullptr);
 QLineEdit* createLineEdit(
     const QString& objectName, const QString& text = "",
     std::function<void(QLineEdit*, const QString&)> onChange = nullptr);
+QTextEdit* createTextEdit(
+    const QString& objectName, const QString& text = "",
+    std::function<void(QTextEdit*, const QString&)> onChange = nullptr);
 QDoubleSpinBox* createDoubleSpinBox(
     const QString& objectName, double minVal, double maxVal, double stepVal,
     double defaultVal,
@@ -92,6 +117,17 @@ QCheckBox* createCheckBox(
     const QString& objectName, const QString& text, Qt::CheckState checked,
     std::function<void(QCheckBox*, const int&)> onChange = nullptr);
 QList<QObject*> getTargetObjectsFromLayout(QLayout* layout);
+
+class WidgetFactoryDependencyNotifier : public QObject {
+  Q_OBJECT
+
+ public:
+  static WidgetFactoryDependencyNotifier* Instance();
+  void emitEditorChanged(QWidget* widget);
+
+ signals:
+  void editorChanged(const QString& customId, QWidget* widget);
+};
 
 }  // namespace FOEDAG
 

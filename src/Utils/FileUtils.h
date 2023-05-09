@@ -29,7 +29,14 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <string_view>
 #include <vector>
 
+class QProcess;
+
 namespace FOEDAG {
+
+struct Return {
+  int code{};
+  std::string message{};
+};
 
 class FileUtils final {
  public:
@@ -57,18 +64,43 @@ class FileUtils final {
   static std::filesystem::path LocateFileRecursive(
       const std::filesystem::path& searchPath, const std::string filename);
 
-  static int ExecuteSystemCommand(const std::string& command,
-                                  std::ostream* result);
+  static std::vector<std::filesystem::path> FindFileInDirs(
+      const std::string& filename,
+      const std::vector<std::filesystem::path>& searchPaths,
+      bool caseInsensitive);
+
+  static std::filesystem::path FindFileByExtension(
+      const std::filesystem::path& path, const std::string& extension);
+
+  static Return ExecuteSystemCommand(const std::string& command,
+                                     const std::vector<std::string>& args,
+                                     std::ostream* out, int timeout_ms = -1,
+                                     const std::string& workingDir = {},
+                                     std::ostream* err = nullptr);
 
   static time_t Mtime(const std::filesystem::path& path);
 
   static bool IsUptoDate(const std::string& sourceFile,
                          const std::string& outputFile);
 
+  static std::string AdjustPath(const std::string& p);
+  static std::string AdjustPath(const std::filesystem::path& p);
+
+  // return true if file was removed otherwise return false
+  static bool removeFile(const std::string& file) noexcept;
+  static bool removeFile(const std::filesystem::path& file) noexcept;
+
+  // for the debug purposes, this function prints arguments
+  static void printArgs(int argc, const char* argv[]);
+
+  static void terminateSystemCommand();
+
  private:
   FileUtils() = delete;
   FileUtils(const FileUtils& orig) = delete;
   ~FileUtils() = delete;
+
+  static std::vector<QProcess*> m_processes;
 };
 
 };  // namespace FOEDAG

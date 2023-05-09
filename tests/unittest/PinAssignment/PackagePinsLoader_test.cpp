@@ -55,6 +55,14 @@ TEST(PackagePinsLoader, LoadWrongFilePath) {
   EXPECT_NE(error, QString());
 }
 
+TEST(PackagePinsLoader, LoadHeaderCorruptedJson) {
+  PackagePinsModel model;
+  PackagePinsLoader loader{&model};
+  auto [res, error] = loader.loadHeader(":/PinAssignment/corrupted.json");
+  EXPECT_EQ(res, false);
+  EXPECT_NE(error, QString());
+}
+
 TEST(PackagePinsLoader, LoadAllPins) {
   PackagePinsModel model;
   PackagePinsLoader loader{&model};
@@ -101,7 +109,7 @@ TEST(PackagePinsLoader, LoadHeaderGeneral) {
   EXPECT_EQ(res, true) << error.toStdString();
 
   auto header = model.header();
-  EXPECT_EQ(header.size(), 15);
+  EXPECT_EQ(header.size(), 16);
   // check random column
   auto col0 = header.at(0);
   EXPECT_EQ(col0.name, "Name");

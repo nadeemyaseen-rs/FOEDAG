@@ -19,6 +19,9 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#ifndef IPGENERATOR_H
+#define IPGENERATOR_H
+
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -26,9 +29,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <vector>
 
 #include "IPGenerate/IPCatalog.h"
-
-#ifndef IPGENERATOR_H
-#define IPGENERATOR_H
 
 namespace FOEDAG {
 
@@ -47,6 +47,8 @@ class IPGenerator {
   std::vector<IPInstance*> IPInstances() { return m_instances; }
   bool AddIPInstance(IPInstance* instance);
   IPInstance* GetIPInstance(const std::string& moduleName);
+  FOEDAG::Value* GetCatalogParam(IPInstance* instance,
+                                 const std::string& paramName);
   void RemoveIPInstance(IPInstance* instance);
   void RemoveIPInstance(const std::string& moduleName);
   void DeleteIPInstance(IPInstance* instance);
@@ -55,7 +57,19 @@ class IPGenerator {
     m_instances.erase(m_instances.begin(), m_instances.end());
   }
   bool Generate();
+  std::pair<bool, std::string> IsSimulateIpSupported(
+      const std::string& name) const;
+  void SimulateIp(const std::string& name);
+  std::pair<bool, std::string> OpenWaveForm(const std::string& name);
   std::filesystem::path GetBuildDir(IPInstance* instance) const;
+  std::filesystem::path GetSimDir(IPInstance* instance) const;
+  std::filesystem::path GetSimArtifactsDir(IPInstance* instance) const;
+  std::filesystem::path GetCachePath(IPInstance* instance) const;
+  std::filesystem::path GetTmpCachePath(IPInstance* instance) const;
+  std::vector<std::filesystem::path> GetDesignFiles(IPInstance* instance);
+
+ protected:
+  std::pair<bool, std::string> SimulateIpTcl(const std::string& name);
 
  protected:
   IPCatalog* m_catalog = nullptr;

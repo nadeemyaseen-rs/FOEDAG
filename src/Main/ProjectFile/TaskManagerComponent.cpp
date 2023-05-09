@@ -27,6 +27,8 @@ TaskManagerComponent::TaskManagerComponent(TaskManager *taskManager,
     : ProjectFileComponent(parent), m_taskManager(taskManager) {
   connect(m_taskManager, &TaskManager::done, this,
           &TaskManagerComponent::saveFile);
+  connect(m_taskManager, &TaskManager::enableChanged, this,
+          &TaskManagerComponent::saveFile);
 }
 
 void TaskManagerComponent::Save(QXmlStreamWriter *writer) {
@@ -40,6 +42,8 @@ void TaskManagerComponent::Save(QXmlStreamWriter *writer) {
                              QString::number(m_taskManager->taskId(task)));
       writer->writeAttribute(TASK_STATUS,
                              QString::number(static_cast<int>(task->status())));
+      writer->writeAttribute(
+          TASK_ENABLE, QString::number(static_cast<int>(task->isEnable())));
       writer->writeEndElement();
     }
     writer->writeEndElement();
@@ -63,9 +67,16 @@ void TaskManagerComponent::Load(QXmlStreamReader *reader) {
               TaskStatus status = static_cast<TaskStatus>(
                   reader->attributes().value(TASK_STATUS).toInt());
               auto task = m_taskManager->task(id);
-              task->blockSignals(true);
-              task->setStatus(status);
-              task->blockSignals(false);
+              if (task) {
+                task->blockSignals(true);
+                bool enable = task->isEnableDefault();
+                if (reader->attributes().hasAttribute(TASK_ENABLE))
+                  enable =
+                      (reader->attributes().value(TASK_ENABLE).toInt() == 1);
+                task->setStatus(status);
+                task->setEnable(enable);
+                task->blockSignals(false);
+              }
             }
           }
         }

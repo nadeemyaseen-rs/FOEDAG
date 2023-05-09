@@ -75,11 +75,58 @@ TEST_F(MultiLineTest, replaceStringTest) {
 }
 
 TEST_F(MultiLineTest, tokenizeTest) {
-  auto tokenized_lines = std::vector<std::string>{};
-  StringUtils::tokenize(multiline_str, "\n", tokenized_lines);
+  auto tokenized_lines = StringUtils::tokenize(multiline_str, "\n");
   ASSERT_EQ(tokenized_lines.size(), 3);
   EXPECT_EQ(*tokenized_lines.rbegin(),
             "Hope that this program will be useful.");
+}
+
+TEST_F(MultiLineTest, tokenizeNoSeparator) {
+  std::string testStr{"test0test1test2"};
+  auto tokenized_lines = StringUtils::tokenize(testStr, "\n");
+  ASSERT_EQ(tokenized_lines.size(), 1);
+  EXPECT_EQ(*tokenized_lines.rbegin(), "test0test1test2");
+}
+
+TEST_F(MultiLineTest, tokenizeLongSeparator_0) {
+  std::string testStr{"test0SEPARATORtest1SEPARATORtest2"};
+  auto tokenized_lines = StringUtils::tokenize(testStr, "SEPARATOR");
+  ASSERT_EQ(tokenized_lines.size(), 3);
+  EXPECT_EQ(*tokenized_lines.rbegin(), "test2") << *tokenized_lines.rbegin();
+}
+
+TEST_F(MultiLineTest, tokenizeLongSeparator_1) {
+  std::string testStr{"test0SEPtest1SEPARATORtest2"};
+  auto tokenized_lines = StringUtils::tokenize(testStr, "SEPARATOR");
+  ASSERT_EQ(tokenized_lines.size(), 2);
+  EXPECT_EQ(*tokenized_lines.begin(), "test0SEPtest1");
+}
+
+TEST_F(MultiLineTest, tokenizeLongSeparator_2) {
+  std::string testStr{"test0SEPtest1SEPtest2SEP"};
+  auto tokenized_lines = StringUtils::tokenize(testStr, "SEPARATOR");
+  ASSERT_EQ(tokenized_lines.size(), 1);
+  EXPECT_EQ(*tokenized_lines.begin(), "test0SEPtest1SEPtest2SEP");
+}
+
+TEST_F(MultiLineTest, tokenizeTestSkipEmpty_0) {
+  auto testStr{"  string   with   empty    spaces  "};
+  auto tokenized_lines = StringUtils::tokenize(testStr, " ", true);
+  ASSERT_EQ(tokenized_lines.size(), 4);
+  EXPECT_EQ(*tokenized_lines.begin(), "string");
+  EXPECT_EQ(*(tokenized_lines.begin() + 1), "with");
+  EXPECT_EQ(*(tokenized_lines.begin() + 2), "empty");
+  EXPECT_EQ(*(tokenized_lines.begin() + 3), "spaces");
+}
+
+TEST_F(MultiLineTest, tokenizeTestSkipEmpty_1) {
+  auto testStr{"string  with empty spaces"};
+  auto tokenized_lines = StringUtils::tokenize(testStr, " ", true);
+  ASSERT_EQ(tokenized_lines.size(), 4);
+  EXPECT_EQ(*tokenized_lines.begin(), "string");
+  EXPECT_EQ(*(tokenized_lines.begin() + 1), "with");
+  EXPECT_EQ(*(tokenized_lines.begin() + 2), "empty");
+  EXPECT_EQ(*(tokenized_lines.begin() + 3), "spaces");
 }
 
 TEST(StringUtilsTest, LeafTest) {
@@ -90,7 +137,15 @@ TEST(StringUtilsTest, LeafTest) {
 
 TEST(StringUtilsTest, toStringTest) {
   const auto dbl_str = std::string("3.000");
-  ASSERT_EQ(StringUtils::to_string(3.0), dbl_str);
+  auto res{StringUtils::to_string(3.0, 3)};
+  ASSERT_EQ(res, dbl_str);
+}
+
+TEST(StringUtilsTest, toNumberTest) {
+  const auto str = std::string("337");
+  auto [num, ok]{StringUtils::to_number<int>(str)};
+  ASSERT_EQ(ok, true);
+  ASSERT_EQ(num, 337);
 }
 
 TEST(StringUtilsTest, removeCommentsTest) {
@@ -135,6 +190,38 @@ TEST(StringUtilsTest, joinFewElements) {
   std::vector<std::string> join{"element1", "element2"};
   auto res = StringUtils::join(join, "---");
   EXPECT_EQ(res, "element1---element2");
+}
+
+TEST(StringUtilsTest, containsEmpty) {
+  StringVector empty{};
+  auto res = StringUtils::contains(empty, "any");
+  EXPECT_EQ(res, false);
+}
+
+TEST(StringUtilsTest, containsFound) {
+  StringVector test{"test1", "test2"};
+  auto res = StringUtils::contains(test, "test2");
+  EXPECT_EQ(res, true);
+}
+
+TEST(StringUtilsTest, containsNotFound) {
+  StringVector test{"test1", "test2"};
+  auto res = StringUtils::contains(test, "test3");
+  EXPECT_EQ(res, false);
+}
+
+TEST(StringUtilsTest, setArgumentValueEmpty) {
+  StringVector test{};
+  StringUtils::setArgumentValue(test, "arg", "value");
+  StringVector expected{"arg", "value"};
+  EXPECT_EQ(test, expected);
+}
+
+TEST(StringUtilsTest, setArgumentValueExists) {
+  StringVector test{"arg", "value"};
+  StringUtils::setArgumentValue(test, "arg", "value1");
+  StringVector expected{"arg", "value1"};
+  EXPECT_EQ(test, expected);
 }
 
 }  // namespace
