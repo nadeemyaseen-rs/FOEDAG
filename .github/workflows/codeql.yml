@@ -22,7 +22,7 @@ on:
 jobs:
   analyze:
     name: Analyze
-    runs-on: ${{ (matrix.language == 'cpp' && 'ubuntu-latest') }}
+    runs-on: ${{ (matrix.language == 'cpp' && 'ubuntu-20.04') }}
     permissions:
       actions: read
       contents: read
