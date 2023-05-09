@@ -41,6 +41,9 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v3
 
+    - run: |
+         bash .github/workflows/install_ubuntu_dependencies_build.sh
+
     # Initializes the CodeQL tools for scanning.
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v2
@@ -67,7 +70,6 @@ jobs:
 
     - run: |
          echo "Run, Build Application using script"
-         bash .github/workflows/install_ubuntu_dependencies_build.sh
          make
 
     - name: Perform CodeQL Analysis
