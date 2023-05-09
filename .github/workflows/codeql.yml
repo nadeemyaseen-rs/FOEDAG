@@ -40,6 +40,9 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
+      with:
+        submodules: recursive
+        fetch-depth: 0
 
     - run: |
          bash .github/workflows/install_ubuntu_dependencies_build.sh
